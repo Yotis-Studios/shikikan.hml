@@ -360,9 +360,23 @@ export fn Game(server) {
     game.set_attack_damage = fn(dmg) { self.attack_damage = dmg; };
     game.set_num_teams = fn(teams) { self.num_teams = teams; };
 
+    // THE CLAMP LIVES HERE, not at the packet. Every route into the roster size goes through
+    // this -- the GAME_NUM_PLAYERS packet, set_one_v_one, and a map load -- so putting the bounds
+    // at one caller would leave the others able to set a count no map can seat.
+    //
+    // Bounds, and why each one:
+    //   num_bases   a four-base map cannot seat six however hard the lobby asks
+    //   2           a match needs two sides
+    //   even        team play halves the roster and the CLIENT rounds nowhere, so an odd count is
+    //               a silently mismatched team rather than an error
     game.set_num_players = fn(players) {
-        self.num_players = players;
-        send_event("numPlayers", players);
+        let want = players;
+        if (want > self.num_bases) { want = self.num_bases; }
+        if (want < 2) { want = 2; }
+        want = want - (want % 2);
+        self.num_players = want;
+        send_event("numPlayers", want);
+        return want;
     };
 
     game.set_one_v_one = fn(enable) {

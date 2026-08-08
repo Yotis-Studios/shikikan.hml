@@ -1,0 +1,52 @@
+// game_roster_test.hml — the roster size clamp
+//
+// set_num_players is reachable from three places (the GAME_NUM_PLAYERS packet, set_one_v_one, and
+// a map load), so the bounds live in it rather than at any one caller. These are the bounds.
+//
+// NOTE: the Hemlock testing framework limits a describe block to ~5 tests.
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockServer } from "./mock.hml";
+import { Game } from "../src/game.hml";
+
+describe("Roster clamp", fn() {
+    test("caps at the map's base count", fn() {
+        let game = Game(MockServer());
+        game.num_bases = 4;
+        expect(game.set_num_players(6)).to_equal(4);
+        expect(game.num_players).to_equal(4);
+    });
+
+    test("floors at two", fn() {
+        let game = Game(MockServer());
+        game.num_bases = 4;
+        expect(game.set_num_players(0)).to_equal(2);
+        expect(game.num_players).to_equal(2);
+    });
+
+    test("forces even", fn() {
+        let game = Game(MockServer());
+        game.num_bases = 6;
+        // Team play halves the roster and the client rounds nowhere, so an odd count is a
+        // silently mismatched team rather than an error.
+        expect(game.set_num_players(5)).to_equal(4);
+        expect(game.set_num_players(3)).to_equal(2);
+    });
+
+    test("accepts a legal count unchanged", fn() {
+        let game = Game(MockServer());
+        game.num_bases = 6;
+        expect(game.set_num_players(6)).to_equal(6);
+        expect(game.set_num_players(2)).to_equal(2);
+    });
+
+    test("clamping an odd over-cap request lands even", fn() {
+        let game = Game(MockServer());
+        game.num_bases = 5;
+        // Cap first, then even -- 7 caps to 5 and then rounds to 4. Doing it the other way round
+        // would give 6, which the five-base map cannot seat.
+        expect(game.set_num_players(7)).to_equal(4);
+    });
+});
+
+run();

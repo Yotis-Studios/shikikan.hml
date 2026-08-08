@@ -225,21 +225,15 @@ export fn PacketHandler(connection_manager) {
                 // so the lobby cannot be pushed into a state no map can satisfy by a client that
                 // is out of date, modified, or simply wrong.
                 if (is_host) {
-                    let want = packet.get(0);
-                    if (want > g.num_bases) { want = g.num_bases; }
-                    if (want < 2) { want = 2; }
-                    // Team play halves the roster and nothing rounds, so an odd count is a
-                    // silently mismatched team rather than an error. Forced even here as well as
-                    // on the client, because this is the end that everyone else hears.
-                    want = want - (want % 2);
-                    g.set_num_players(want);
+                    // set_num_players clamps and returns what it settled on -- see game.hml.
+                    let agreed = g.set_num_players(packet.get(0));
 
-                    // Rebuilt rather than relayed: the value that goes out is the CLAMPED one.
-                    // Relaying the incoming packet would tell the other clients what was ASKED
-                    // for, and they would disagree with the server about the roster -- the exact
-                    // failure this packet exists to remove.
+                    // REBUILT, NOT RELAYED. The value that goes out is the CLAMPED one. Relaying
+                    // the incoming packet would tell the other clients what was ASKED for, and a
+                    // request that hit a bound would leave the host one step ahead of the lobby --
+                    // the exact disagreement this packet exists to remove.
                     let np_packet = Packet(id.GAME_NUM_PLAYERS);
-                    np_packet.add(want);
+                    np_packet.add(agreed);
                     self.server.broadcast(np_packet);
                 }
 
