@@ -1,0 +1,59 @@
+// server.hml — Raifu Wars game server entry point
+
+import { Server, Packet } from "Yotis-Studios/gn.hml";
+import { send_event } from "./lib/lobby.hml";
+import * as id from "./src/id.hml";
+import { Game } from "./src/game.hml";
+import { ConnectionManager } from "./src/connection_manager.hml";
+import { PacketHandler } from "./src/packet_handler.hml";
+import { randint } from "@stdlib/random";
+
+// Bind to a random available port
+// TODO: use getPort equivalent or bind to port 0
+let port = randint(10000, 60000);
+
+let server = Server();
+let game = Game(server);
+let cm = ConnectionManager(server, game);
+let handler = PacketHandler(cm);
+
+server.on("ready", fn() {
+    send_event("port", server._port);
+});
+
+server.on("connect", fn(connection) {
+    if (game.lobby_password == "") {
+        if (!game.game_started) {
+            cm.add_connection(connection);
+        }
+    } else {
+        cm.solicit_lobby_password(connection);
+    }
+});
+
+server.on("packet", fn(connection, packet) {
+    handler.handle_packet(connection, packet);
+});
+
+server.on("disconnect", fn(connection) {
+    cm.remove_connection(connection);
+});
+
+server.on("error", fn(err, connection) {
+    if (connection != null) {
+        let kick_packet = Packet(id.PLAYER_KICK);
+        kick_packet.add("An error occurred sending data.");
+        connection.send(kick_packet);
+        connection.kick();
+        print("Kicked connection due to error: " + err);
+    } else {
+        print("WARNING: server encountered error not caused by a connection");
+        print(err);
+        let kick_packet = Packet(id.PLAYER_KICK);
+        kick_packet.add("The server encountered an error.");
+        server.broadcast(kick_packet);
+        server.close();
+    }
+});
+
+server.listen(port);

@@ -1,0 +1,172 @@
+// session.hml — Connection lifecycle management
+//
+// Manages player connections, heartbeat tracking, reconnection by UID,
+// and server auto-shutdown timers. Generic across games.
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import { send_event } from "./lobby.hml";
+import { sleep } from "@stdlib/time";
+import { time_ms } from "@stdlib/time";
+
+// Heartbeat timeout in milliseconds
+let HEARTBEAT_TIMEOUT = 60000;
+// Max server lifetime in milliseconds (24 hours)
+let MAX_LIFETIME = 86400000;
+// Host connect timeout in milliseconds
+let HOST_CONNECT_TIMEOUT = 60000;
+
+let INITIAL_SLOTS = 10;
+
+export fn Session(server, kick_packet_id) {
+    // Pre-allocate slot arrays
+    let init_connections = [];
+    let init_heartbeats = [];
+    let init_uids = [];
+    let s = 0;
+    while (s < INITIAL_SLOTS) {
+        init_connections.push(null);
+        init_heartbeats.push(null);
+        init_uids.push(null);
+        s = s + 1;
+    }
+
+    let session = {
+        server: server,
+        connections: init_connections,
+        heartbeats: init_heartbeats,
+        uids: init_uids,
+        kick_packet_id: kick_packet_id,
+        _closed: false,
+
+        _grow_to: fn(slot) {
+            while (self.connections.length <= slot) {
+                self.connections.push(null);
+                self.heartbeats.push(null);
+                self.uids.push(null);
+            }
+        },
+
+        set_connection: fn(slot, connection) {
+            self._grow_to(slot);
+            self.connections[slot] = connection;
+            self.heartbeats[slot] = time_ms();
+        },
+
+        clear_connection: fn(slot) {
+            self.connections[slot] = null;
+            self.heartbeats[slot] = null;
+        },
+
+        get_connection: fn(slot) {
+            if (slot >= self.connections.length) { return null; }
+            return self.connections[slot];
+        },
+
+        update_heartbeat: fn(slot) {
+            if (slot < self.heartbeats.length) {
+                self.heartbeats[slot] = time_ms();
+            }
+        },
+
+        get_slot_by_connection: fn(connection) {
+            let i = 0;
+            while (i < self.connections.length) {
+                if (self.connections[i] == connection) {
+                    return i;
+                }
+                i = i + 1;
+            }
+            return null;
+        },
+
+        find_slot_by_uid: fn(uid) {
+            let i = 0;
+            while (i < self.uids.length) {
+                if (self.uids[i] == uid && self.connections[i] == null) {
+                    return i;
+                }
+                i = i + 1;
+            }
+            return null;
+        },
+
+        set_uid: fn(slot, uid) {
+            self._grow_to(slot);
+            self.uids[slot] = uid;
+        },
+
+        kick: fn(connection, message) {
+            let packet = Packet(self.kick_packet_id);
+            packet.add(message);
+            connection.send(packet);
+            connection.kick();
+        },
+
+        kick_all: fn(message) {
+            let packet = Packet(self.kick_packet_id);
+            packet.add(message);
+            let i = 0;
+            while (i < self.connections.length) {
+                if (self.connections[i] != null) {
+                    self.connections[i].send(packet);
+                }
+                i = i + 1;
+            }
+        },
+
+        count_connections: fn() {
+            let count = 0;
+            let i = 0;
+            while (i < self.connections.length) {
+                if (self.connections[i] != null) {
+                    count = count + 1;
+                }
+                i = i + 1;
+            }
+            return count;
+        },
+
+        start_timers: fn(host_slot, on_timeout) {
+            let sess = self;
+
+            // Host connect timeout
+            spawn(async fn(s, h, cb) {
+                sleep(HOST_CONNECT_TIMEOUT / 1000.0);
+                if (s.connections[h] == null && !s._closed) {
+                    cb("host_timeout");
+                }
+            }, sess, host_slot, on_timeout);
+
+            // Heartbeat check every 60s
+            spawn(async fn(s, cb) {
+                while (!s._closed) {
+                    sleep(HEARTBEAT_TIMEOUT / 1000.0);
+                    let now = time_ms();
+                    let i = 0;
+                    while (i < s.heartbeats.length) {
+                        if (s.heartbeats[i] != null) {
+                            if (s.heartbeats[i] < (now - HEARTBEAT_TIMEOUT)) {
+                                cb("heartbeat:" + i);
+                            }
+                        }
+                        i = i + 1;
+                    }
+                }
+            }, sess, on_timeout);
+
+            // 24 hour max lifetime
+            spawn(async fn(s, cb) {
+                sleep(MAX_LIFETIME / 1000.0);
+                if (!s._closed) {
+                    cb("max_lifetime");
+                }
+            }, sess, on_timeout);
+        },
+
+        close: fn() {
+            self._closed = true;
+        },
+    };
+
+    return session;
+}

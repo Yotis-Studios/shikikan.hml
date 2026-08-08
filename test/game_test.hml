@@ -1,0 +1,169 @@
+// game_test.hml — Tests for Game state and lifecycle
+// NOTE: Hemlock testing bug limits to ~5 tests per describe block
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockServer } from "./mock.hml";
+import { Game } from "../src/game.hml";
+import * as id from "../src/id.hml";
+
+describe("Game init", fn() {
+    test("initializes with 6 players", fn() {
+        let game = Game(MockServer());
+        let count = 0;
+        let i = 0;
+        while (i < game.players.length) {
+            if (game.players[i] != null) { count = count + 1; }
+            i = i + 1;
+        }
+        expect(count).to_equal(6);
+    });
+
+    test("default settings", fn() {
+        let game = Game(MockServer());
+        expect(game.host).to_equal(0);
+        expect(game.game_started).to_be_false();
+        expect(game.num_bases).to_equal(4);
+        expect(game.num_players).to_equal(4);
+    });
+
+    test("has a random seed", fn() {
+        let game = Game(MockServer());
+        expect(game.seed).not_to_equal(0);
+    });
+
+    test("default names", fn() {
+        let game = Game(MockServer());
+        expect(game.get_player(0).name).to_equal("Player 1");
+        expect(game.get_player(3).name).to_equal("Player 4");
+    });
+
+    test("get_player returns correct slot", fn() {
+        let game = Game(MockServer());
+        expect(game.get_player(0).client_num).to_equal(0);
+        expect(game.get_player(3).client_num).to_equal(3);
+    });
+});
+
+describe("Game swap and host", fn() {
+    test("swap_players swaps names", fn() {
+        let game = Game(MockServer());
+        let name0 = game.players[0].name;
+        let name1 = game.players[1].name;
+        game.swap_players(0, 1);
+        expect(game.players[0].name).to_equal(name1);
+        expect(game.players[1].name).to_equal(name0);
+    });
+
+    test("swap_players updates client_num", fn() {
+        let game = Game(MockServer());
+        game.swap_players(0, 2);
+        expect(game.players[0].client_num).to_equal(0);
+        expect(game.players[2].client_num).to_equal(2);
+    });
+
+    test("swap_players swaps host", fn() {
+        let game = Game(MockServer());
+        game.swap_players(0, 1);
+        expect(game.host).to_equal(1);
+    });
+
+    test("switch_host changes host", fn() {
+        let game = Game(MockServer());
+        game.switch_host(2);
+        expect(game.host).to_equal(2);
+    });
+
+    test("switch_host broadcasts packet", fn() {
+        let server = MockServer();
+        let game = Game(server);
+        server.clear();
+        game.switch_host(1);
+        let packet = server.get_last_packet();
+        expect(packet.net_id).to_equal(id.PLAYER_HOST);
+    });
+});
+
+describe("Game players", fn() {
+    test("set_random_players assigns unique sprites", fn() {
+        let game = Game(MockServer());
+        game.set_random_players();
+        let seen = {};
+        let i = 0;
+        let all_unique = true;
+        while (i < game.players.length) {
+            let player = game.players[i];
+            if (player != null && player.sprite != null) {
+                if (seen["" + player.sprite] == true) {
+                    all_unique = false;
+                }
+                seen["" + player.sprite] = true;
+            }
+            i = i + 1;
+        }
+        expect(all_unique).to_be_true();
+    });
+
+    test("set_random_players gives all players sprites", fn() {
+        let game = Game(MockServer());
+        game.set_random_players();
+        let i = 0;
+        while (i < 6) {
+            expect(game.players[i].sprite).not_to_be_null();
+            i = i + 1;
+        }
+    });
+
+    test("reset_player clears state", fn() {
+        let game = Game(MockServer());
+        let player = game.get_player(1);
+        player.name = "TestPlayer";
+        player.ready = true;
+        player.sprite = 5;
+        game.reset_player(1);
+        expect(player.name).to_equal("Player 2");
+        expect(player.ready).to_be_false();
+        expect(player.sprite).to_be_null();
+    });
+
+    test("all_players_ready true when none connected", fn() {
+        let game = Game(MockServer());
+        expect(game.all_players_ready()).to_be_true();
+    });
+});
+
+describe("Game settings", fn() {
+    test("set_game_length", fn() {
+        let game = Game(MockServer());
+        game.set_game_length(1);
+        expect(game.game_length).to_equal(1);
+    });
+
+    test("set_game_speed", fn() {
+        let game = Game(MockServer());
+        game.set_game_speed(3);
+        expect(game.game_speed).to_equal(3);
+    });
+
+    test("set_game_timer", fn() {
+        let game = Game(MockServer());
+        game.set_game_timer(60);
+        expect(game.game_timer).to_equal(60);
+    });
+
+    test("set_one_v_one", fn() {
+        let game = Game(MockServer());
+        game.set_one_v_one(true);
+        expect(game.onevone).to_be_true();
+        expect(game.num_players).to_equal(2);
+    });
+
+    test("toggle_deck_card", fn() {
+        let game = Game(MockServer());
+        game.toggle_deck_card(5, 0);
+        expect(game.deck.cards[5]).to_equal(0);
+        game.toggle_deck_card(5, 1);
+        expect(game.deck.cards[5]).to_equal(1);
+    });
+});
+
+let results = run();

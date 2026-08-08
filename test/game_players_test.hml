@@ -1,0 +1,55 @@
+// game_players_test.hml — Tests for player management
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockServer } from "./mock.hml";
+import { Game } from "../src/game.hml";
+
+describe("Game player management", fn() {
+    test("set_random_players assigns unique sprites", fn() {
+        let game = Game(MockServer());
+        game.set_random_players();
+        let seen = {};
+        let i = 0;
+        let all_unique = true;
+        while (i < game.players.length) {
+            let player = game.players[i];
+            if (player != null && player.sprite != null) {
+                if (seen["" + player.sprite] == true) {
+                    all_unique = false;
+                }
+                seen["" + player.sprite] = true;
+            }
+            i = i + 1;
+        }
+        expect(all_unique).to_be_true();
+    });
+
+    test("set_random_players gives all players sprites", fn() {
+        let game = Game(MockServer());
+        game.set_random_players();
+        let i = 0;
+        while (i < 6) {
+            expect(game.players[i].sprite).not_to_be_null();
+            i = i + 1;
+        }
+    });
+
+    test("reset_player clears state", fn() {
+        let game = Game(MockServer());
+        let player = game.get_player(1);
+        player.name = "TestPlayer";
+        player.ready = true;
+        player.sprite = 5;
+        game.reset_player(1);
+        expect(player.name).to_equal("Player 2");
+        expect(player.ready).to_be_false();
+        expect(player.sprite).to_be_null();
+    });
+
+    test("all_players_ready true when none connected", fn() {
+        let game = Game(MockServer());
+        expect(game.all_players_ready()).to_be_true();
+    });
+});
+
+let results = run();

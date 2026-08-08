@@ -1,0 +1,89 @@
+// map.hml — Map decompression, hashing, coin spawning, data transfer
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+import { inflate_decompress } from "@stdlib/compression";
+import { sha1 } from "@stdlib/hash";
+import { parse } from "@stdlib/json";
+import { randint } from "@stdlib/random";
+import { send_event } from "../lib/lobby.hml";
+
+let MAX_CHUNK_SIZE = 250;
+
+export fn Map(compressed_data, game) {
+    let map = {
+        data: compressed_data,
+        game: game,
+        coins: [],
+        hash: null,
+        meta: null,
+    };
+
+    // Decompress and parse map data
+    let decompressed = inflate_decompress(compressed_data);
+    // First line is JSON metadata
+    let newline_idx = 0;
+    while (newline_idx < decompressed.length) {
+        if (decompressed[newline_idx] == "\n") {
+            break;
+        }
+        newline_idx = newline_idx + 1;
+    }
+    let meta_str = decompressed.slice(0, newline_idx);
+
+    map.hash = sha1(decompressed);
+    map.meta = parse(meta_str);
+
+    // Broadcast hash to all clients
+    let hash_packet = Packet(id.MAP_HASH);
+    hash_packet.add(map.hash);
+    game.server.broadcast(hash_packet);
+
+    // Set player count from map bases
+    let num_bases = map.get_num_bases();
+    if (!game.onevone) {
+        game.set_num_players(num_bases);
+    }
+    game.num_bases = num_bases;
+
+    send_event("mapHash", map.hash);
+    send_event("mapName", map.meta.name);
+
+    map.send_data_to_connection = fn(connection) {
+        let tot_len = self.data.length;
+
+        let size_packet = Packet(id.MAP_DOWNLOAD);
+        size_packet.add(tot_len);
+        connection.send(size_packet);
+
+        let i = 0;
+        while (i < tot_len) {
+            let n = tot_len - i;
+            if (n > MAX_CHUNK_SIZE) { n = MAX_CHUNK_SIZE; }
+            let chunk = self.data.slice(i, i + n);
+            let chunk_packet = Packet(id.MAP_DOWNLOAD);
+            chunk_packet.add(chunk);
+            connection.send(chunk_packet);
+            i = i + MAX_CHUNK_SIZE;
+        }
+    };
+
+    map.spawn_coin = fn() {
+        let tx = randint(0, self.meta.map_w - 1);
+        let ty = randint(0, self.meta.map_h - 1);
+        self.coins.push({ x: tx, y: ty });
+        let coin_packet = Packet(id.COIN_SPAWN);
+        coin_packet.add(tx);
+        coin_packet.add(ty);
+        self.game.server.broadcast(coin_packet);
+    };
+
+    map.get_num_bases = fn() {
+        if (self.meta.bases != null) {
+            return self.meta.bases.length;
+        }
+        return 4;
+    };
+
+    return map;
+}

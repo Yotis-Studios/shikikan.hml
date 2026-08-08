@@ -1,0 +1,39 @@
+// save_data.hml — Compressed game state for reconnection
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+import { inflate_decompress } from "@stdlib/compression";
+import { parse } from "@stdlib/json";
+
+let MAX_CHUNK_SIZE = 250;
+
+export fn SaveData(compressed_data) {
+    return {
+        data: compressed_data,
+
+        inflate: fn(callback) {
+            let decompressed = inflate_decompress(self.data);
+            let save_json = parse(decompressed);
+            callback(save_json);
+        },
+
+        send_data_to_connection: fn(connection) {
+            let tot_len = self.data.length;
+
+            let size_packet = Packet(id.GAME_SAVE);
+            size_packet.add(tot_len);
+            connection.send(size_packet);
+
+            let i = 0;
+            while (i < tot_len) {
+                let n = tot_len - i;
+                if (n > MAX_CHUNK_SIZE) { n = MAX_CHUNK_SIZE; }
+                let chunk = self.data.slice(i, i + n);
+                let chunk_packet = Packet(id.GAME_SAVE);
+                chunk_packet.add(chunk);
+                connection.send(chunk_packet);
+                i = i + MAX_CHUNK_SIZE;
+            }
+        },
+    };
+}

@@ -1,0 +1,83 @@
+// Packet ID constants — must match the GameMaker client exactly
+
+export let MESSAGE = 0;
+
+export let CLIENT_INIT = 1;
+export let CLIENT_CONNECT = 2;
+export let CLIENT_DISCONNECT = 3;
+export let CLIENT_HALT = 4;
+export let CLIENT_ACK = 5;
+export let CLIENT_READY = 6;
+export let CLIENT_UID = 7;
+
+export let PLAYER_ADD = 10;
+export let PLAYER_READY = 11;
+export let PLAYER_KICK = 12;
+export let PLAYER_LIST = 13;
+export let PLAYER_NAME = 14;
+export let PLAYER_CHAT = 15;
+export let PLAYER_SWAP = 16;
+export let PLAYER_HOST = 17;
+export let PLAYER_CUSTOM = 18;
+export let PLAYER_HAT = 19;
+
+export let PLAYER_IS_MOVE = 20;
+export let PLAYER_SET_MOVE = 21;
+export let PLAYER_MOVE = 22;
+
+export let PLAYER_IS_ATTACK = 25;
+export let PLAYER_SET_ATTACK = 26;
+export let PLAYER_ATTACK = 27;
+
+export let PLAYER_CONFIRM = 30;
+export let PLAYER_CANCEL = 31;
+export let PLAYER_RELOAD = 32;
+export let PLAYER_CARD = 33;
+export let PLAYER_TIER = 34;
+export let PLAYER_ENDTURN = 35;
+export let PLAYER_ROLL = 36;
+export let PLAYER_LUCK = 37;
+export let PLAYER_SYNC = 38;
+export let PLAYER_SPECTATE = 39;
+
+export let LOBBY_PASSWORD = 40;
+export let LOBBY_NAME = 41;
+export let LOBBY_SPECTATORS = 42;
+
+export let CPU_LEVEL = 50;
+export let CPU_CHAR = 51;
+
+export let ERROR_SYNC = 69;
+
+export let MAP_UPLOAD = 80;
+export let MAP_DOWNLOAD = 81;
+export let MAP_HASH = 82;
+export let MAP_CLIMATE = 83;
+
+export let TILE_SELECT = 90;
+
+export let GAME_SEED = 100;
+export let GAME_START = 101;
+export let GAME_END = 102;
+export let GAME_SYNC = 103;
+export let GAME_READY = 104;
+export let GAME_BASE = 105;
+export let GAME_LENGTH = 106;
+export let GAME_SET_SPEED = 107;
+export let GAME_TIMER = 108;
+export let GAME_TEAMS = 109;
+export let GAME_TIER_OPTIONS = 110;
+export let GAME_ATTACK_DAMAGE = 111;
+export let GAME_DECK = 112;
+export let GAME_SAVE = 113;
+export let GAME_ONEVONE = 114;
+
+export let DECK_RESET = 140;
+export let DECK_VALUES = 141;
+export let DECK_COST = 142;
+export let DECK_TIER = 143;
+export let DECK_WEIGHT = 144;
+
+export let COIN_SPAWN = 150;
+export let COIN_GET = 151;
+export let COIN_CONFIRM = 152;

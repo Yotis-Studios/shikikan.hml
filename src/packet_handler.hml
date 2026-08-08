@@ -1,0 +1,453 @@
+// packet_handler.hml — Packet dispatch and validation
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+import { SaveData } from "./save_data.hml";
+import { send_event } from "../lib/lobby.hml";
+import { randint, randf } from "@stdlib/random";
+import { time_ms } from "@stdlib/time";
+
+export fn PacketHandler(connection_manager) {
+    let server = connection_manager.server;
+    let game = connection_manager.game;
+
+    return {
+        connection_manager: connection_manager,
+        server: server,
+        game: game,
+
+        handle_packet: fn(connection, packet) {
+            let g = self.game;
+            let cm = self.connection_manager;
+            let i = cm.get_id_from_connection(connection);
+            let is_host = g.host == i;
+            let is_player = i != null && i < g.num_bases;
+            let cur_player_idx = g.turn % g.num_bases;
+            let half = g.num_bases / 2;
+            let is_onevone = g.onevone;
+            let is_onevone_team = is_onevone && ((i < half && cur_player_idx < half) || (i >= half && cur_player_idx >= half));
+            let is_cur_turn = cur_player_idx == i || is_onevone_team;
+            let cur_player = g.get_player(cur_player_idx);
+            let cur_player_is_cpu = cur_player.is_cpu();
+            let valid_player_packet = (is_host || is_player) && (is_cur_turn || (is_host && cur_player_is_cpu));
+
+            if (packet.net_id == id.CLIENT_ACK) {
+                cm.session.update_heartbeat(i);
+                let ack_packet = Packet(id.CLIENT_ACK);
+                ack_packet.add(time_ms() / 1000);
+                connection.send(ack_packet);
+
+            } else if (packet.net_id == id.CLIENT_UID) {
+                let uid = packet.get(0);
+                connection.uid = uid;
+                if (i != null) {
+                    g.get_player(i).uid = uid;
+                } else {
+                    if (g.lobby_password == "") {
+                        cm.add_connection(connection);
+                    }
+                }
+
+            } else if (packet.net_id == id.CLIENT_READY) {
+                let ready_player = g.get_player(i);
+                if (ready_player != null) {
+                    let ready_packet = Packet(id.CLIENT_READY);
+                    ready_packet.add(i);
+                    ready_packet.add(ready_player.name);
+                    self.server.broadcast(ready_packet);
+                }
+
+            } else if (packet.net_id == id.MESSAGE) {
+                let message = packet.get(0);
+                let msg_packet = Packet(id.MESSAGE);
+                msg_packet.add(message);
+                self.server.broadcast(msg_packet);
+
+            } else if (packet.net_id == id.PLAYER_ADD) {
+                if (i < g.num_bases || g.spectators) {
+                    let player = g.get_player(i);
+                    player.connection = connection;
+                    player.server = self.server;
+                    player.sprite = packet.get(0);
+                    player.symbol = packet.get(1);
+                    player.color = packet.get(2);
+                    player.level = packet.get(3);
+                    let pl_packet = Packet(id.PLAYER_LIST);
+                    g.add_players_to_packet(pl_packet, true);
+                    self.server.broadcast(pl_packet);
+                }
+
+            } else if (packet.net_id == id.PLAYER_NAME) {
+                let name = packet.get(0);
+                let player = g.get_player(i);
+                if (player != null) {
+                    player.name = name;
+                }
+                g.broadcast_names();
+
+            } else if (packet.net_id == id.PLAYER_CUSTOM) {
+                let j = packet.get(0);
+                let player = g.get_player(j);
+                if (player != null) {
+                    player.eye_color = packet.get(1);
+                    player.hair_color = packet.get(2);
+                    player.uniform_color = packet.get(3);
+                    player.skin_color = packet.get(4);
+                    player.broadcast_custom();
+                }
+
+            } else if (packet.net_id == id.PLAYER_HAT) {
+                let j = packet.get(0);
+                let hat = packet.get(1);
+                let player = g.get_player(j);
+                if (player != null) {
+                    player.hat = hat;
+                    player.broadcast_hat();
+                }
+
+            } else if (packet.net_id == id.PLAYER_LIST) {
+                let pl_packet = Packet(id.PLAYER_LIST);
+                g.add_players_to_packet(pl_packet, true);
+                self.server.broadcast(pl_packet);
+
+            } else if (packet.net_id == id.PLAYER_ROLL) {
+                if (!valid_player_packet) { return; }
+                let roll = randint(1, 6);
+                let luck = randf(0.0, 1.0);
+                let roll_packet = Packet(id.PLAYER_ROLL);
+                roll_packet.add(roll);
+                roll_packet.add(luck);
+                self.server.broadcast(roll_packet);
+
+            } else if (packet.net_id == id.PLAYER_TIER) {
+                if (!valid_player_packet) { return; }
+                let tier_choice = packet.get(0);
+                let tier_packet = Packet(id.PLAYER_TIER);
+                tier_packet.add(i);
+                tier_packet.add(tier_choice);
+                connection.broadcast(tier_packet);
+                let the_player = g.get_player(i);
+                if (tier_choice == -1) { the_player.tier = the_player.tier + 1; }
+                if (the_player.tier == 4) {
+                    g.cancel_turn_timeout();
+                }
+
+            } else if (packet.net_id == id.GAME_START) {
+                if (is_host) { g.start_game(); }
+
+            } else if (packet.net_id == id.GAME_END) {
+                if (is_host) { g.end_game(connection, packet); }
+
+            } else if (packet.net_id == id.PLAYER_ENDTURN) {
+                if (!valid_player_packet) { return; }
+                connection.broadcast(packet);
+                g.end_turn();
+
+            } else if (packet.net_id == id.PLAYER_READY) {
+                let player = g.get_player(i);
+                if (player != null) {
+                    if (packet.get(0) == null) {
+                        player.ready = !player.ready;
+                    } else {
+                        player.ready = packet.get(0);
+                    }
+                    let ready_packet = Packet(id.PLAYER_READY);
+                    ready_packet.add(i);
+                    ready_packet.add(player.ready);
+                    connection.broadcast(ready_packet);
+                }
+
+            } else if (packet.net_id == id.GAME_READY) {
+                let player = g.get_player(i);
+                if (player != null) {
+                    player.ready = true;
+                    if (g.all_players_ready()) {
+                        let ready_packet = Packet(id.GAME_READY);
+                        self.server.broadcast(ready_packet);
+                    }
+                }
+
+            } else if (packet.net_id == id.PLAYER_CARD) {
+                if (!valid_player_packet) { return; }
+                let operation = packet.get(0);
+                let card_idx = packet.get(2);
+                if (operation == 2) {
+                    let j = 0;
+                    while (j < card_idx) {
+                        packet.add(randf(0.0, 1.0));
+                        j = j + 1;
+                    }
+                    self.server.broadcast(packet);
+                } else {
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_LENGTH) {
+                if (is_host) {
+                    g.set_game_length(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_SET_SPEED) {
+                if (is_host) {
+                    g.set_game_speed(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_BASE) {
+                if (is_host) {
+                    g.set_random_bases(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_TIMER) {
+                if (is_host) {
+                    g.set_game_timer(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_ATTACK_DAMAGE) {
+                if (is_host) {
+                    g.set_sudden_death(packet.get(0));
+                    g.set_attack_damage(packet.get(1));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_TEAMS) {
+                if (is_host) {
+                    g.set_num_teams(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_ONEVONE) {
+                if (is_host) {
+                    g.set_one_v_one(packet.get(0));
+                    connection.broadcast(packet);
+                    if (g.onevone) { cm.set_one_v_one_players(); }
+                }
+
+            } else if (packet.net_id == id.GAME_TIER_OPTIONS) {
+                if (is_host) {
+                    g.set_tier_options(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_DECK) {
+                if (is_host) {
+                    let n = packet.data.length;
+                    if (n == 2) {
+                        g.toggle_deck_card(packet.get(0), packet.get(1));
+                    } else {
+                        let k = 0;
+                        while (k < n) {
+                            g.toggle_deck_card(k, packet.get(k));
+                            k = k + 1;
+                        }
+                    }
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.GAME_SAVE) {
+                if (is_host) {
+                    if (g.game_data == null) {
+                        let data_length = packet.get(0);
+                        if (data_length == null || data_length < 0 || data_length > 1000000) {
+                            cm.kill_server(0);
+                        } else {
+                            print("Expecting " + data_length + " bytes for save data");
+                            g.game_data = buffer(0);
+                            g.game_bytes = data_length;
+                        }
+                    } else {
+                        let part = packet.get(0);
+                        g.game_data = g.game_data + part;
+                        if (g.game_data.length == g.game_bytes) {
+                            let save_data = SaveData(g.game_data);
+                            save_data.inflate(fn(data) {
+                                g.turn = data.turnNumber;
+                                g.cur_player = data.curPlayer;
+                                let pi = 0;
+                                while (pi < g.players.length) {
+                                    let player = g.players[pi];
+                                    if (player != null) {
+                                        player.ready = false;
+                                        let conn = player.connection;
+                                        if (conn != null) {
+                                            save_data.send_data_to_connection(conn);
+                                        }
+                                    }
+                                    pi = pi + 1;
+                                }
+                                g.game_data = null;
+                            });
+                        }
+                    }
+                }
+
+            } else if (packet.net_id == id.MAP_UPLOAD) {
+                if (is_host) {
+                    if (g.map_data == null) {
+                        let data_length = packet.get(0);
+                        if (data_length > 100000) {
+                            cm.kill_server(0);
+                        } else {
+                            print("Expecting " + data_length + " bytes for map data");
+                            g.map_data = buffer(0);
+                            g.map_bytes = data_length;
+                        }
+                    } else {
+                        let part = packet.get(0);
+                        g.map_data = g.map_data + part;
+                        if (g.map_data.length == g.map_bytes) {
+                            g.decode_map();
+                        }
+                    }
+                }
+
+            } else if (packet.net_id == id.MAP_DOWNLOAD) {
+                g.map.send_data_to_connection(connection);
+
+            } else if (packet.net_id == id.PLAYER_CHAT) {
+                let team = packet.get(0);
+                let chat_msg = packet.get(1);
+                let chat_packet = Packet(id.PLAYER_CHAT);
+                chat_packet.add(i);
+                chat_packet.add(team);
+                chat_packet.add(chat_msg);
+                self.server.broadcast(chat_packet);
+
+            } else if (packet.net_id == id.PLAYER_KICK) {
+                if (is_host) {
+                    let j = packet.get(0);
+                    if (j != null && j >= 0 && j < cm.connections.length) {
+                        let victim = cm.connections[j];
+                        if (victim != null) {
+                            let kick_packet = Packet(id.PLAYER_KICK);
+                            kick_packet.add("You have been kicked!");
+                            victim.send(kick_packet);
+                            victim.kick();
+                        }
+                        g.init_new_player(j);
+                        let pl_packet = Packet(id.PLAYER_LIST);
+                        g.add_players_to_packet(pl_packet, true);
+                        self.server.broadcast(pl_packet);
+                    }
+                }
+
+            } else if (packet.net_id == id.PLAYER_SWAP) {
+                let j = packet.get(0);
+                if (g.get_player(i) != null && g.get_player(j) != null) {
+                    let swap_packet = Packet(id.PLAYER_SWAP);
+                    swap_packet.add(i);
+                    swap_packet.add(j);
+                    connection.broadcast(swap_packet);
+                    cm.swap_connections(i, j, false);
+                }
+
+            } else if (packet.net_id == id.LOBBY_NAME) {
+                if (is_host) {
+                    send_event("name", packet.get(0));
+                }
+
+            } else if (packet.net_id == id.LOBBY_PASSWORD) {
+                let given_pass = packet.get(0);
+                if (is_host) {
+                    g.lobby_password = given_pass;
+                    let locked = 0;
+                    if (g.lobby_password != "") { locked = 1; }
+                    send_event("locked", locked);
+                } else if (g.lobby_password == given_pass) {
+                    cm.add_connection(connection);
+                } else {
+                    cm.session.kick(connection, "Incorrect Password");
+                }
+
+            } else if (packet.net_id == id.LOBBY_SPECTATORS) {
+                if (is_host) {
+                    g.set_allow_spectators(packet.get(0));
+                    self.server.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.PLAYER_SPECTATE) {
+                if (g.spectators) {
+                    cm.set_player_as_spectator(i);
+                }
+
+            } else if (packet.net_id == id.PLAYER_SYNC) {
+                if (g.game_timer > 0 && is_cur_turn) {
+                    let epoch_seconds = time_ms() / 1000;
+                    let sync_packet = Packet(id.PLAYER_SYNC);
+                    sync_packet.add(epoch_seconds);
+                    sync_packet.add(epoch_seconds + g.game_timer);
+                    self.server.broadcast(sync_packet);
+                }
+
+            } else if (packet.net_id == id.PLAYER_ATTACK) {
+                if (g.sudden_death) {
+                    packet.add(randf(0.0, 1.0));
+                    self.server.broadcast(packet);
+                } else {
+                    connection.broadcast(packet);
+                }
+
+            } else if (packet.net_id == id.CPU_CHAR) {
+                if (is_host || is_onevone) {
+                    let j = packet.get(0);
+                    let char = packet.get(1);
+                    let player = g.get_player(j);
+                    if (player != null) {
+                        player.sprite = char;
+                        let pl_packet = Packet(id.PLAYER_LIST);
+                        g.add_players_to_packet(pl_packet, true);
+                        self.server.broadcast(pl_packet);
+                    }
+                }
+
+            } else if (packet.net_id == id.COIN_GET) {
+                let tx = packet.get(0);
+                let ty = packet.get(1);
+                let coins = g.map.coins;
+                let got_coin = false;
+                let j = 0;
+                while (j < coins.length) {
+                    let coin = coins[j];
+                    if (coin.x == tx && coin.y == ty) {
+                        coins.remove(j);
+                        got_coin = true;
+                        break;
+                    }
+                    j = j + 1;
+                }
+                if (got_coin) {
+                    let confirm_packet = Packet(id.COIN_CONFIRM);
+                    confirm_packet.add(tx);
+                    confirm_packet.add(ty);
+                    confirm_packet.add(i);
+                    self.server.broadcast(confirm_packet);
+                }
+
+            } else if (packet.net_id == id.ERROR_SYNC) {
+                self.server.broadcast(packet);
+
+            } else if (packet.net_id == id.DECK_RESET
+                    || packet.net_id == id.DECK_WEIGHT
+                    || packet.net_id == id.DECK_COST
+                    || packet.net_id == id.DECK_TIER
+                    || packet.net_id == id.DECK_VALUES) {
+                g.deck.handle_deck_packet(connection, packet);
+
+            } else if (packet.net_id == id.PLAYER_IS_MOVE
+                    || packet.net_id == id.PLAYER_SET_MOVE
+                    || packet.net_id == id.PLAYER_MOVE
+                    || packet.net_id == id.PLAYER_IS_ATTACK
+                    || packet.net_id == id.PLAYER_SET_ATTACK
+                    || packet.net_id == id.PLAYER_RELOAD
+                    || packet.net_id == id.PLAYER_CANCEL
+                    || packet.net_id == id.PLAYER_CONFIRM
+                    || packet.net_id == id.TILE_SELECT) {
+                if (!valid_player_packet) { return; }
+                connection.broadcast(packet);
+            }
+        },
+    };
+}

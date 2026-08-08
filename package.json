@@ -1,0 +1,12 @@
+{
+  "name": "Yotis-Studios/shikikan.hml",
+  "version": "0.1.0",
+  "description": "Lobby and game session server framework for Hemlock, built on gn.hml",
+  "author": "Yotis Studios",
+  "license": "MIT",
+  "main": "lib/index.hml",
+  "dependencies": {
+    "Yotis-Studios/gn.hml": "^0.1.0"
+  },
+  "devDependencies": {}
+}

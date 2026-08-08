@@ -1,0 +1,12 @@
+// Player colors in BGR format (GameMaker convention)
+
+export let COLORS = [
+    0x1c1cb7, // red
+    0x9262f0, // pink
+    0x9A1B6A, // purple
+    0xD27619, // blue
+    0x47A043, // green
+    0x2257FF, // orange
+    0x2DC0FB, // yellow
+    0x636E8D, // brown
+];

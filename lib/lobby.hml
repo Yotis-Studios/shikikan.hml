@@ -1,0 +1,23 @@
+// lobby.hml — IPC with GameRouter and server lifecycle
+//
+// Sends newline-delimited JSON events to stdout for GameRouter to consume.
+// Reads commands from stdin (reserved for future use).
+
+import { stringify } from "@stdlib/json";
+
+// Send an event to GameRouter via stdout
+export fn send_event(event, data) {
+    let msg = stringify({ event: event, data: data });
+    write(msg + "\n");
+}
+
+// Read a command from GameRouter via stdin (blocking)
+// Returns parsed JSON object or null on EOF
+export fn read_command() {
+    let line = read_line();
+    if (line == null) {
+        return null;
+    }
+    import { parse } from "@stdlib/json";
+    return parse(line);
+}

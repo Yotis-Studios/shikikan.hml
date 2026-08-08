@@ -1,0 +1,70 @@
+// player.hml — Player state and broadcasting
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+
+export fn Player(game, client_num, connection, server, name, sprite, symbol, color) {
+    return {
+        game: game,
+        client_num: client_num,
+        tx: 0,
+        ty: 0,
+        hp: 6,
+        tier: 0,
+        team: client_num,
+        color: color,
+        name: name,
+        sprite: sprite,
+        symbol: symbol,
+        level: 3,
+        ready: false,
+        server: server,
+        connection: connection,
+        uid: null,
+        eye_color: null,
+        hair_color: null,
+        uniform_color: null,
+        skin_color: null,
+        hat: null,
+
+        kick: fn(reason) {
+            if (self.connection == null) { return; }
+            let packet = Packet(id.PLAYER_KICK);
+            packet.add(reason);
+            self.connection.send(packet);
+            self.connection.kick();
+        },
+
+        is_cpu: fn() {
+            let conn_is_null = self.connection == null;
+            if (self.game.onevone) {
+                let half = self.game.num_bases / 2;
+                if (self.client_num != 0 && self.client_num != half) {
+                    return self.game.get_player(self.client_num - 1).is_cpu();
+                }
+            }
+            return conn_is_null;
+        },
+
+        to_array: fn() {
+            return [self.client_num, self.sprite, self.symbol, self.color, self.ready, self.is_cpu(), self.level];
+        },
+
+        broadcast_custom: fn() {
+            let packet = Packet(id.PLAYER_CUSTOM);
+            packet.add(self.client_num);
+            packet.add(self.eye_color);
+            packet.add(self.hair_color);
+            packet.add(self.uniform_color);
+            packet.add(self.skin_color);
+            self.server.broadcast(packet);
+        },
+
+        broadcast_hat: fn() {
+            let packet = Packet(id.PLAYER_HAT);
+            packet.add(self.client_num);
+            packet.add(self.hat);
+            self.server.broadcast(packet);
+        },
+    };
+}

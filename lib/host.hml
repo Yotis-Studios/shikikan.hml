@@ -1,0 +1,16 @@
+// host.hml — Host authority helpers
+//
+// Utilities for validating that a packet came from the host player.
+
+// Check if a given slot is the current host
+export fn is_host(slot, host_slot) {
+    return slot == host_slot;
+}
+
+// Check if a packet is a valid "current player" action
+// Accounts for host controlling CPUs and 1v1 team logic
+export fn is_valid_player_action(slot, host_slot, cur_player, is_cur_player_cpu, is_player) {
+    let is_cur_turn = slot == cur_player;
+    let is_host_controlling_cpu = slot == host_slot && is_cur_player_cpu;
+    return (is_host_controlling_cpu || is_player) && (is_cur_turn || is_host_controlling_cpu);
+}

@@ -1,0 +1,80 @@
+// deck.hml — Card deck configuration and synchronization
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+
+let MAX_CARDS = 35;
+
+export fn Deck() {
+    let cards = [];
+    let values = [];
+    let i = 0;
+    while (i < MAX_CARDS) {
+        cards.push(1);
+        values.push(null);
+        i = i + 1;
+    }
+
+    return {
+        cards: cards,
+        values: values,
+
+        toggle_card: fn(i, enabled) {
+            self.cards[i] = enabled;
+        },
+
+        handle_deck_packet: fn(connection, packet) {
+            if (packet.net_id == id.DECK_VALUES) {
+                // Reset values
+                let i = 0;
+                while (i < self.values.length) {
+                    self.values[i] = null;
+                    i = i + 1;
+                }
+                i = 0;
+                while (i < packet.data.length) {
+                    let cardi = packet.data[i];
+                    let weight = packet.data[i + 1];
+                    let tier = packet.data[i + 2];
+                    let cost = packet.data[i + 3];
+                    // Grow if needed
+                    while (self.values.length <= cardi) { self.values.push(null); }
+                    self.values[cardi] = { weight: weight, tier: tier, cost: cost };
+                    i = i + 4;
+                }
+            } else if (packet.net_id == id.DECK_COST) {
+                let cardi = packet.get(0);
+                while (self.values.length <= cardi) { self.values.push(null); }
+                if (self.values[cardi] == null) { self.values[cardi] = {}; }
+                self.values[cardi].cost = packet.get(1);
+            } else if (packet.net_id == id.DECK_TIER) {
+                let cardi = packet.get(0);
+                while (self.values.length <= cardi) { self.values.push(null); }
+                if (self.values[cardi] == null) { self.values[cardi] = {}; }
+                self.values[cardi].tier = packet.get(1);
+            } else if (packet.net_id == id.DECK_WEIGHT) {
+                let cardi = packet.get(0);
+                while (self.values.length <= cardi) { self.values.push(null); }
+                if (self.values[cardi] == null) { self.values[cardi] = {}; }
+                self.values[cardi].weight = packet.get(1);
+            }
+            connection.broadcast(packet);
+        },
+
+        serialize_and_send: fn(connection) {
+            let packet = Packet(id.DECK_VALUES);
+            let i = 0;
+            while (i < self.values.length) {
+                let v = self.values[i];
+                if (v != null) {
+                    packet.add(i);
+                    packet.add(v.weight);
+                    packet.add(v.tier);
+                    packet.add(v.cost);
+                }
+                i = i + 1;
+            }
+            connection.send(packet);
+        },
+    };
+}

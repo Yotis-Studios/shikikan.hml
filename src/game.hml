@@ -1,0 +1,419 @@
+// game.hml — Core game state and lifecycle
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+import { Player } from "./player.hml";
+import { Map } from "./map.hml";
+import { Deck } from "./deck.hml";
+import { COLORS } from "./colors.hml";
+import { send_event } from "../lib/lobby.hml";
+import { randint, randf, shuffle } from "@stdlib/random";
+
+export fn Game(server) {
+    let game = {
+        server: server,
+        players: [null, null, null, null, null, null],
+        host: 0,
+        game_started: false,
+        num_bases: 4,
+        num_players: 4,
+        num_teams: 4,
+        onevone: false,
+        turn: 0,
+        cur_player: 0,
+        map: null,
+        map_data: null,
+        map_bytes: 0,
+        game_data: null,
+        game_bytes: 0,
+        seed: 0,
+        random_bases: false,
+        bases: [0, 1, 2, 3],
+        game_length: 0,
+        game_speed: 1,
+        game_timer: 120,
+        sudden_death: false,
+        attack_damage: null,
+        tier_options: 0,
+        turn_timeout: null,
+        lobby_password: "",
+        deck: Deck(),
+        spectators: true,
+        last_coin: 0,
+    };
+
+    game.reset_seed = fn() {
+        self.seed = randint(0, 999999999);
+    };
+
+    game.get_player = fn(i) {
+        if (i == null || i < 0 || i >= self.players.length) { return null; }
+        return self.players[i];
+    };
+
+    game.swap_players = fn(i, j) {
+        let temp = self.players[i];
+        self.players[i] = self.players[j];
+        self.players[i].client_num = i;
+        self.players[j] = temp;
+        self.players[j].client_num = j;
+
+        if (self.host == i) {
+            self.switch_host(j);
+        } else if (self.host == j) {
+            self.switch_host(i);
+        }
+
+        self.update_player_count();
+    };
+
+    game.switch_host = fn(j) {
+        self.get_player(j).ready = true;
+        self.host = j;
+        let packet = Packet(id.PLAYER_HOST);
+        packet.add(self.host);
+        self.server.broadcast(packet);
+
+        if (self.get_player(self.cur_player).is_cpu()) {
+            let endturn_packet = Packet(id.PLAYER_ENDTURN);
+            self.server.broadcast(endturn_packet);
+            self.end_turn();
+        }
+    };
+
+    game.set_random_players = fn() {
+        let chosen = {};
+        let i = 0;
+        while (i < self.players.length) {
+            let player = self.players[i];
+            if (player != null && player.sprite != null) {
+                chosen["" + player.sprite] = true;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < self.players.length) {
+            let player = self.players[i];
+            if (player == null) { i = i + 1; continue; }
+            let is_cpu = player.is_cpu();
+            if (player.sprite == null) {
+                let sprite = 0;
+                let max_chars = 12;
+                while (chosen["" + sprite] == true) {
+                    sprite = randint(0, max_chars - 1);
+                }
+                player.sprite = sprite;
+                player.symbol = sprite;
+                let half = self.num_bases / 2;
+                if (self.onevone && player.client_num != 0 && player.client_num != half) {
+                    let other_idx = 0;
+                    if (player.client_num >= half) { other_idx = half; }
+                    let other = self.players[other_idx];
+                    player.name = other.name;
+                    player.symbol = other.symbol;
+                }
+                if (is_cpu) {
+                    player.eye_color = null;
+                    player.hair_color = null;
+                    player.uniform_color = null;
+                    player.skin_color = null;
+                    player.broadcast_custom();
+                    player.hat = null;
+                    player.broadcast_hat();
+                    player.name = "Player " + (i + 1);
+                }
+                chosen["" + sprite] = true;
+            }
+            i = i + 1;
+        }
+    };
+
+    game.add_players_to_packet = fn(packet, include_cpu) {
+        let i = 0;
+        while (i < self.players.length) {
+            let player = self.players[i];
+            if (player != null && (include_cpu || player.connection != null)) {
+                let plr = player.to_array();
+                if (i >= self.num_bases && player.connection == null) {
+                    plr[0] = null;
+                }
+                packet.add(plr);
+            }
+            i = i + 1;
+        }
+        return packet;
+    };
+
+    game.broadcast_names = fn() {
+        let i = 0;
+        while (i < self.players.length) {
+            let player = self.players[i];
+            if (player != null) {
+                let name_packet = Packet(id.PLAYER_NAME);
+                name_packet.add(i);
+                name_packet.add(player.name);
+                self.server.broadcast(name_packet);
+                player.broadcast_custom();
+                player.broadcast_hat();
+            }
+            i = i + 1;
+        }
+    };
+
+    game.init_new_player = fn(i) {
+        let color = null;
+        if (i < COLORS.length) { color = COLORS[i]; }
+        // Grow array if needed
+        while (self.players.length <= i) {
+            self.players.push(null);
+        }
+        self.players[i] = Player(self, i, null, self.server, "Player " + (i + 1), null, null, color);
+    };
+
+    game.init_player_connection = fn(i, connection) {
+        let player = self.players[i];
+        if (player == null) {
+            self.init_new_player(i);
+        }
+        self.players[i].connection = connection;
+        self.update_player_count();
+        self.players[i].ready = (i == self.host);
+    };
+
+    game.destroy_player_connection = fn(i) {
+        let player = self.players[i];
+        if (player != null) {
+            self.reset_player(i);
+            if (self.onevone) {
+                self.reset_player(i + 1);
+            }
+            let pl_packet = Packet(id.PLAYER_LIST);
+            self.add_players_to_packet(pl_packet, true);
+            self.server.broadcast(pl_packet);
+            self.broadcast_names();
+            self.update_player_count();
+        }
+    };
+
+    game.reset_player = fn(i) {
+        let player = self.players[i];
+        if (player != null) {
+            player.connection = null;
+            player.name = "Player " + (i + 1);
+            player.ready = false;
+            player.level = 3;
+            if (!self.game_started) {
+                player.sprite = null;
+                player.symbol = null;
+            }
+        }
+    };
+
+    game.assign_player_colors = fn() {
+        let chosen = {};
+        let i = 0;
+        while (i < self.num_bases) {
+            let player = self.players[i];
+            if (player.connection != null && chosen["" + player.color] == null) {
+                chosen["" + player.color] = true;
+                player.color = COLORS[player.color];
+            } else {
+                player.color = null;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < self.num_bases) {
+            let player = self.players[i];
+            if (player.color == null) {
+                let color = 0;
+                while (chosen["" + color] == true) {
+                    color = randint(0, 7);
+                }
+                player.color = COLORS[color];
+                chosen["" + color] = true;
+            }
+            i = i + 1;
+        }
+    };
+
+    game.start_game = fn() {
+        if (self.game_started) { return; }
+        self.game_started = true;
+        send_event("isStarted", 1);
+
+        let is_teams = self.num_bases != self.num_teams;
+        let turn_offset = 0;
+        if (is_teams) { turn_offset = 1; }
+        self.turn = turn_offset;
+        self.cur_player = turn_offset;
+        self.last_coin = self.turn;
+        self.map.coins = [];
+
+        self.reset_seed();
+        let seed_packet = Packet(id.GAME_SEED);
+        seed_packet.add(self.seed);
+        self.server.broadcast(seed_packet);
+
+        if (self.random_bases) {
+            self.bases = [];
+            let i = 0;
+            while (i < self.num_bases) {
+                self.bases.push(i);
+                i = i + 1;
+            }
+            self.bases = shuffle(self.bases);
+            let base_packet = Packet(id.GAME_BASE);
+            base_packet.add(self.bases);
+            self.server.broadcast(base_packet);
+        }
+
+        self.set_random_players();
+        self.assign_player_colors();
+        let start_packet = Packet(id.GAME_START);
+        self.add_players_to_packet(start_packet, true);
+        self.server.broadcast(start_packet);
+        self.broadcast_names();
+
+        let j = 0;
+        while (j < self.num_bases) {
+            self.players[j].ready = false;
+            j = j + 1;
+        }
+    };
+
+    game.end_game = fn(connection, packet) {
+        if (!self.game_started) { return; }
+        self.game_started = false;
+        send_event("isStarted", 0);
+        connection.broadcast(packet);
+
+        let j = 0;
+        while (j < self.num_bases) {
+            let is_host_player = (j == self.host);
+            self.players[j].ready = is_host_player;
+            if (self.onevone) {
+                let half = self.num_bases / 2;
+                if (j != 0 && j != half) {
+                    self.players[j].ready = true;
+                }
+            }
+            j = j + 1;
+        }
+    };
+
+    game.decode_map = fn() {
+        self.map = Map(self.map_data, self);
+        self.map_data = null;
+    };
+
+    game.update_player_count = fn() {
+        let count = 0;
+        let i = 0;
+        while (i < self.num_bases) {
+            if (self.players[i].connection != null) {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        if (count > 0) { send_event("players", count); }
+    };
+
+    game.all_players_ready = fn() {
+        let i = 0;
+        while (i < self.num_bases) {
+            let player = self.players[i];
+            if (!player.ready && player.connection != null) { return false; }
+            i = i + 1;
+        }
+        return true;
+    };
+
+    game.set_allow_spectators = fn(allow) {
+        self.spectators = allow;
+        send_event("spectators", allow);
+        if (!allow) {
+            let i = self.num_bases;
+            while (i < self.players.length) {
+                let player = self.players[i];
+                if (player != null && player.connection != null) {
+                    player.kick("Spectators are not allowed.");
+                }
+                i = i + 1;
+            }
+        }
+    };
+
+    game.set_game_length = fn(len) {
+        self.game_length = len;
+        send_event("gameLength", len);
+    };
+
+    game.set_game_speed = fn(speed) {
+        self.game_speed = speed;
+        send_event("gameSpeed", speed);
+    };
+
+    game.set_game_timer = fn(timer) { self.game_timer = timer; };
+    game.set_random_bases = fn(enable) { self.random_bases = enable; };
+    game.set_sudden_death = fn(enable) { self.sudden_death = enable; };
+    game.set_attack_damage = fn(dmg) { self.attack_damage = dmg; };
+    game.set_num_teams = fn(teams) { self.num_teams = teams; };
+
+    game.set_num_players = fn(players) {
+        self.num_players = players;
+        send_event("numPlayers", players);
+    };
+
+    game.set_one_v_one = fn(enable) {
+        self.onevone = enable;
+        if (self.onevone) {
+            self.set_num_players(2);
+        } else {
+            if (self.map != null) {
+                self.set_num_players(self.map.get_num_bases());
+            } else {
+                self.set_num_players(4);
+            }
+        }
+    };
+
+    game.set_tier_options = fn(option) { self.tier_options = option; };
+
+    game.toggle_deck_card = fn(i, enabled) { self.deck.cards[i] = enabled; };
+
+    game.end_turn = fn() {
+        let luck = randf(0.0, 1.0);
+        let luck_packet = Packet(id.PLAYER_LUCK);
+        luck_packet.add(luck);
+        self.server.broadcast(luck_packet);
+
+        self.cancel_turn_timeout();
+        self.turn = self.turn + 1;
+        self.cur_player = self.turn % self.num_bases;
+
+        // Coin spawn logic
+        if (self.turn >= self.last_coin + 10 && self.map.coins.length < 3) {
+            let rand = randf(0.0, 1.0);
+            let coin_chance = 0.25;
+            if (rand <= coin_chance) {
+                self.last_coin = self.turn;
+                self.map.spawn_coin();
+            }
+        }
+    };
+
+    game.cancel_turn_timeout = fn() {
+        self.turn_timeout = null;
+    };
+
+    // Initialize
+    game.reset_seed();
+    let i = 0;
+    while (i < 6) {
+        game.init_new_player(i);
+        i = i + 1;
+    }
+
+    return game;
+}

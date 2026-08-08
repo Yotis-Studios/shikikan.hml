@@ -1,0 +1,83 @@
+// mock.hml — Mock server and connection for unit testing
+
+import { Packet } from "Yotis-Studios/gn.hml";
+
+export fn MockServer() {
+    return {
+        broadcasts: [],
+        closed: false,
+        _connections: [],
+
+        broadcast: fn(packet, exclude) {
+            self.broadcasts.push(packet);
+        },
+
+        get_last_packet: fn() {
+            if (self.broadcasts.length == 0) { return null; }
+            return self.broadcasts[self.broadcasts.length - 1];
+        },
+
+        close: fn() {
+            self.closed = true;
+        },
+
+        // Count broadcasts with a specific net_id
+        count_broadcasts: fn(net_id) {
+            let count = 0;
+            let i = 0;
+            while (i < self.broadcasts.length) {
+                let p = self.broadcasts[i];
+                if (p.net_id == net_id) {
+                    count = count + 1;
+                }
+                i = i + 1;
+            }
+            return count;
+        },
+
+        clear: fn() {
+            self.broadcasts = [];
+        },
+    };
+}
+
+export fn MockConnection() {
+    return {
+        packets: [],
+        kicked: false,
+        uid: null,
+
+        send: fn(packet) {
+            self.packets.push(packet);
+        },
+
+        broadcast: fn(packet) {
+            // no-op in mock — would normally broadcast to others
+        },
+
+        kick: fn() {
+            self.kicked = true;
+        },
+
+        get_last_packet: fn() {
+            if (self.packets.length == 0) { return null; }
+            return self.packets[self.packets.length - 1];
+        },
+
+        // Find most recent packet with a specific net_id
+        get_packet_by_id: fn(net_id) {
+            let i = self.packets.length - 1;
+            while (i >= 0) {
+                if (self.packets[i].net_id == net_id) {
+                    return self.packets[i];
+                }
+                i = i - 1;
+            }
+            return null;
+        },
+
+        clear: fn() {
+            self.packets = [];
+        },
+    };
+}
