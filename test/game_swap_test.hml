@@ -39,7 +39,7 @@ describe("Game swap and host", fn() {
         let game = Game(server);
         server.clear();
         game.switch_host(1);
-        let packet = server.get_last_packet();
+        let packet = server.broadcasts[0];
         expect(packet.net_id).to_equal(id.PLAYER_HOST);
     });
 });

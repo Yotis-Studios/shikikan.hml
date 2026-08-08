@@ -8,7 +8,7 @@ export fn MockServer() {
         closed: false,
         _connections: [],
 
-        broadcast: fn(packet, exclude) {
+        broadcast: fn(packet, exclude?: null) {
             self.broadcasts.push(packet);
         },
 
