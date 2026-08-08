@@ -72,6 +72,11 @@ export let GAME_DECK = 112;
 export let GAME_SAVE = 113;
 export let GAME_ONEVONE = 114;
 
+// 1.14. The lobby roster size. Every client used to derive this from the map, so a
+// host who changed it alone disagreed with the lobby about which slots exist --
+// which is why the client's stepper was offline-only.
+export let GAME_NUM_PLAYERS = 115;
+
 export let DECK_RESET = 140;
 export let DECK_VALUES = 141;
 export let DECK_COST = 142;

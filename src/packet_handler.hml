@@ -219,6 +219,30 @@ export fn PacketHandler(connection_manager) {
                     connection.broadcast(packet);
                 }
 
+            } else if (packet.net_id == id.GAME_NUM_PLAYERS) {
+                // The host asks; the SERVER decides. A client that asks for more seats than the
+                // map has, or an odd count, gets the clamped value back like everybody else --
+                // so the lobby cannot be pushed into a state no map can satisfy by a client that
+                // is out of date, modified, or simply wrong.
+                if (is_host) {
+                    let want = packet.get(0);
+                    if (want > g.num_bases) { want = g.num_bases; }
+                    if (want < 2) { want = 2; }
+                    // Team play halves the roster and nothing rounds, so an odd count is a
+                    // silently mismatched team rather than an error. Forced even here as well as
+                    // on the client, because this is the end that everyone else hears.
+                    want = want - (want % 2);
+                    g.set_num_players(want);
+
+                    // Rebuilt rather than relayed: the value that goes out is the CLAMPED one.
+                    // Relaying the incoming packet would tell the other clients what was ASKED
+                    // for, and they would disagree with the server about the roster -- the exact
+                    // failure this packet exists to remove.
+                    let np_packet = Packet(id.GAME_NUM_PLAYERS);
+                    np_packet.add(want);
+                    self.server.broadcast(np_packet);
+                }
+
             } else if (packet.net_id == id.GAME_ONEVONE) {
                 if (is_host) {
                     g.set_one_v_one(packet.get(0));

@@ -66,3 +66,43 @@ hemlock server.hml
 
 Packet IDs in `src/id.hml` must match the GameMaker client exactly.
 Do not renumber without updating the client.
+
+**This is now checked rather than remembered.** The client repo carries
+`tools/check-packet-ids.py`, which compares `src/id.hml` against
+`scripts/net_event_ids/net_event_ids.gml` and runs as part of its `compile-check.sh`. Point it
+here with `RW_SHIKIKAN=/path/to/shikikan.hml` if the repo is not at `~/Projects/shikikan.hml`.
+
+It catches three things:
+
+- a name defined on both sides with different numbers
+- the same number used twice within one side
+- a name defined on only ONE side whose number collides with a live id on the other -- one-sided
+  ids are normal (`PREMIUM_KEY` is client-only, `MAP_CLIMATE` is server-only and unused), but a
+  collision means one end acts on the other's packet as something else
+
+**Why it matters more than most invariants:** a mismatch does not crash and does not fail to
+parse. Both ends read a number and dispatch on it, so one end just performs the wrong action.
+
+## Protocol reference
+
+`RaifuWars/docs/protocol/PROTOCOL.md` in the client repo documents the whole protocol -- the three
+packet shapes, what 1.14 added and why, host migration, the client's packet queue lock, and notes
+for a redesign. It is the shared reference; neither repo owns the protocol alone.
+
+## 1.14: GAME_NUM_PLAYERS (115)
+
+The host may resize the lobby roster online. Previously every client derived `numPlayers` from the
+map, so a host changing it alone disagreed with the lobby about which slots exist -- the client's
+stepper was gated offline-only for that reason.
+
+**The host asks; this server decides.** `packet_handler` clamps the request to `num_bases`, to a
+minimum of 2, and to an even number, then broadcasts a NEW packet carrying the clamped value to
+everyone including the asker.
+
+Rebuilding rather than relaying is the point: relaying the incoming packet would tell the other
+clients what was ASKED for, and a clamped request would leave the host one step ahead of the lobby
+-- the exact disagreement the packet exists to remove. `set_num_players` already existed (it emits
+the `numPlayers` IPC event GameRouter lists lobbies with); it simply had no packet reaching it.
+
+Even-ness matters: team play halves the roster and the client rounds nowhere, so an odd count is a
+silently mismatched team rather than an error.
