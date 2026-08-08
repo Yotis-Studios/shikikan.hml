@@ -33,7 +33,14 @@ export fn Game(server) {
         game_speed: 1,
         game_timer: 120,
         sudden_death: false,
-        attack_damage: null,
+        // 0, not null. gn cannot serialise null into a packet, so a fresh lobby sending its
+        // settings to a joining client threw inside connection.send and the server kicked them --
+        // every first connection to a fresh server failed, which read as a network fault.
+        //
+        // Safe as a NUMBER because the client only reads attackDamage when suddenDeath is set
+        // (fireAtAttackTarget), and sudden_death defaults false. The value is ignored until
+        // somebody chooses a damage mode, at which point it is overwritten.
+        attack_damage: 0,
         tier_options: 0,
         turn_timeout: null,
         lobby_password: "",

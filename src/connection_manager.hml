@@ -15,6 +15,18 @@ export fn ConnectionManager(server, game) {
         game: game,
         session: Session(server, id.PLAYER_KICK),
 
+        // gn's packet encoder handles NUMBERS, not booleans -- a packet carrying a bool throws
+        // "Binary operation requires numeric operands" inside send(). Every settings packet
+        // before the first bool went out fine, which is why this presented as a connection that
+        // opened and immediately closed rather than as a serialisation error.
+        //
+        // 1/0 is wire-compatible with what the client already expects: GameMaker treats them as
+        // true/false, and the client sends its own booleans the same way.
+        bnum: fn(v) {
+            if (v) { return 1; }
+            return 0;
+        },
+
         add_connection: fn(connection) {
             let g = self.game;
 
@@ -24,9 +36,18 @@ export fn ConnectionManager(server, game) {
                 return;
             }
 
-            // Check for reconnection by UID
+            // Check for reconnection by UID.
+            //
+            // `connection?.uid`, NOT `connection.uid`. Hemlock THROWS on reading a field an
+            // object does not have; JavaScript yields undefined. gn.js set `uid` only on a
+            // reconnect, so `connection.uid != null` was the natural way to ask "is this a
+            // reconnect" -- and porting that expression unchanged made the connect handler throw
+            // on every FIRST connection, which the server then kicked.
+            //
+            // Every client was rejected. The symptom at the other end is a WebSocket that opens
+            // and immediately closes, which reads as a network problem rather than a server one.
             let conn_id = null;
-            if (connection.uid != null) {
+            if (connection?.uid != null) {
                 let i = 0;
                 while (i < g.num_bases) {
                     let plr = g.get_player(i);
@@ -100,7 +121,7 @@ export fn ConnectionManager(server, game) {
             connection.send(tier_packet);
 
             let attack_packet = Packet(id.GAME_ATTACK_DAMAGE);
-            attack_packet.add(g.sudden_death);
+            attack_packet.add(self.bnum(g.sudden_death));
             attack_packet.add(g.attack_damage);
             connection.send(attack_packet);
 
@@ -109,11 +130,11 @@ export fn ConnectionManager(server, game) {
             connection.send(teams_packet);
 
             let onevone_packet = Packet(id.GAME_ONEVONE);
-            onevone_packet.add(g.onevone);
+            onevone_packet.add(self.bnum(g.onevone));
             connection.send(onevone_packet);
 
             let bases_packet = Packet(id.GAME_BASE);
-            bases_packet.add(g.random_bases);
+            bases_packet.add(self.bnum(g.random_bases));
             connection.send(bases_packet);
 
             // Deck options
@@ -129,7 +150,7 @@ export fn ConnectionManager(server, game) {
 
             // Spectator status
             let spectate_packet = Packet(id.LOBBY_SPECTATORS);
-            spectate_packet.add(g.spectators);
+            spectate_packet.add(self.bnum(g.spectators));
             connection.send(spectate_packet);
 
             // Send map hash and game speed if not host
@@ -170,6 +191,20 @@ export fn ConnectionManager(server, game) {
 
         remove_connection: fn(connection) {
             let conn_id = self.get_id_from_connection(connection);
+
+            // A connection that was never ADDED still disconnects, and get_id_from_connection
+            // returns null for it -- indexing with null then throws "Index must be an integer"
+            // inside the disconnect handler. That is not hypothetical: while the uid bug above
+            // was kicking every client, every one of those kicks produced this second error on
+            // the way out, which buried the first.
+            //
+            // Rejected connections are the normal case here, not an edge case: a full lobby, a
+            // wrong password and a game already started all reach this path.
+            if (conn_id == null) {
+                print("Connection closed (never joined)");
+                return;
+            }
+
             self.connections[conn_id] = null;
             self.session.clear_connection(conn_id);
 
