@@ -14,19 +14,6 @@ export fn ConnectionManager(server, game) {
         server: server,
         game: game,
         session: Session(server, id.PLAYER_KICK),
-
-        // gn's packet encoder handles NUMBERS, not booleans -- a packet carrying a bool throws
-        // "Binary operation requires numeric operands" inside send(). Every settings packet
-        // before the first bool went out fine, which is why this presented as a connection that
-        // opened and immediately closed rather than as a serialisation error.
-        //
-        // 1/0 is wire-compatible with what the client already expects: GameMaker treats them as
-        // true/false, and the client sends its own booleans the same way.
-        bnum: fn(v) {
-            if (v) { return 1; }
-            return 0;
-        },
-
         add_connection: fn(connection) {
             let g = self.game;
 
@@ -121,7 +108,7 @@ export fn ConnectionManager(server, game) {
             connection.send(tier_packet);
 
             let attack_packet = Packet(id.GAME_ATTACK_DAMAGE);
-            attack_packet.add(self.bnum(g.sudden_death));
+            attack_packet.add(g.sudden_death);
             attack_packet.add(g.attack_damage);
             connection.send(attack_packet);
 
@@ -130,11 +117,11 @@ export fn ConnectionManager(server, game) {
             connection.send(teams_packet);
 
             let onevone_packet = Packet(id.GAME_ONEVONE);
-            onevone_packet.add(self.bnum(g.onevone));
+            onevone_packet.add(g.onevone);
             connection.send(onevone_packet);
 
             let bases_packet = Packet(id.GAME_BASE);
-            bases_packet.add(self.bnum(g.random_bases));
+            bases_packet.add(g.random_bases);
             connection.send(bases_packet);
 
             // Deck options
@@ -150,7 +137,7 @@ export fn ConnectionManager(server, game) {
 
             // Spectator status
             let spectate_packet = Packet(id.LOBBY_SPECTATORS);
-            spectate_packet.add(self.bnum(g.spectators));
+            spectate_packet.add(g.spectators);
             connection.send(spectate_packet);
 
             // Send map hash and game speed if not host
