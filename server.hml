@@ -7,6 +7,7 @@ import { Game } from "./src/game.hml";
 import { ConnectionManager } from "./src/connection_manager.hml";
 import { PacketHandler } from "./src/packet_handler.hml";
 import { randint } from "@stdlib/random";
+import { fuzz_config, fuzz_wrap } from "./src/fuzz.hml";
 
 // Bind to a random available port
 // TODO: use getPort equivalent or bind to port 0
@@ -21,7 +22,18 @@ server.on("ready", fn() {
     send_event("port", server._port);
 });
 
+// Deliberate mistiming, off unless FUZZ_DELAY_MS and FUZZ_PERCENT are both set. Read once at
+// startup rather than per packet: a fuzzer that could change its own settings mid-match would make
+// a failing run harder to reproduce, which is the opposite of the point.
+let fuzz = fuzz_config();
+if (fuzz != null) {
+    print("FUZZING: " + fuzz.percent + "% of packets delayed up to " + fuzz.delay_ms + "ms");
+}
+
 server.on("connect", fn(connection) {
+    // Wrapped before anything else can send to it, so no packet escapes untouched -- including
+    // the ones add_connection itself sends while setting the lobby up.
+    fuzz_wrap(connection, fuzz);
     if (game.lobby_password == "") {
         if (!game.game_started) {
             cm.add_connection(connection);

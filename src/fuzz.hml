@@ -1,0 +1,105 @@
+// fuzz.hml — deliberately mistime the packets this server sends
+//
+// WHY
+//
+// The server is a RELAY, so WHEN each client learns a thing is the whole protocol. On a LAN,
+// between processes on one machine, every client learns everything at effectively the same
+// instant — so every run of this harness has proved the protocol works under the one condition
+// real players never enjoy.
+//
+// A held roll is the specific suspicion. A match hung once with `remote player rolling` holding
+// the packet queue for 600 frames, and from the client's side "the roll never arrived" and "the
+// roll arrived late" are the same bug.
+//
+// ORDER WITHIN A CONNECTION IS PRESERVED, AND THAT IS NOT A SIMPLIFICATION
+//
+// The first version of this delayed each packet independently, which reorders them. It found a
+// "bug" immediately: the map download appends chunks in arrival order with no sequence number, so
+// a reordered stream produces a corrupt map and the joining client never gets into the game.
+//
+// That is not a bug, because THE TRANSPORT RULES IT OUT. These are WebSockets over TCP, and TCP
+// guarantees in-order delivery within a connection. A fuzzer that reorders a single connection is
+// testing a condition that cannot occur, and every finding it produces is an artefact —
+// expensively indistinguishable from a real one until you go and check.
+//
+// What a real network actually varies is the DELAY, per connection, over time. Clients then learn
+// the same events in the same order at different moments relative to each other, which is exactly
+// the condition a relay protocol has to survive and exactly what was never being tested.
+//
+// So each connection has a monotonically non-decreasing send schedule: a packet leaves at
+// max(when the last one left, now + jitter). Order preserved, timing scrambled, and the
+// divergence between clients is real rather than invented.
+//
+// OFF UNLESS ASKED. Both variables must be set, so a production server with neither in its
+// environment runs the original `send` with nothing wrapped around it.
+//
+//   FUZZ_DELAY_MS   maximum jitter added per packet, in ms
+//   FUZZ_PERCENT    percentage of packets that get any (1-100)
+
+import { getenv } from "@stdlib/env";
+import { sleep, time_ms } from "@stdlib/time";
+import { randint } from "@stdlib/random";
+
+export fn fuzz_config() {
+    let delay = getenv("FUZZ_DELAY_MS");
+    let percent = getenv("FUZZ_PERCENT");
+    if (delay == null) { return null; }
+    if (percent == null) { return null; }
+
+    let d = number(delay);
+    let p = number(percent);
+    if (d <= 0) { return null; }
+    if (p <= 0) { return null; }
+    if (p > 100) { p = 100; }
+
+    return { delay_ms: d, percent: p };
+}
+
+// Wrap one connection's `send` so its stream arrives late but in order.
+//
+// Returns the connection either way, so the caller reads as a pass-through rather than as a
+// conditional — the branch belongs here, where the reason for it is written down.
+export fn fuzz_wrap(connection, cfg) {
+    if (cfg == null) { return connection; }
+
+    // The ORIGINAL, captured before the field is replaced. Reading `self.send` inside the
+    // replacement would find the replacement and recurse until the stack ran out.
+    let original = connection.send;
+
+    // When this connection's last scheduled packet goes out. Per connection, because that is the
+    // unit TCP orders — two connections may diverge freely, one may not reorder against itself.
+    let schedule = { at: 0 };
+
+    connection.send = fn(packet) {
+        // BUILT NOW, SENT LATER. Several handlers add to a packet and broadcast it again, so
+        // holding the object and building it after the sleep would transmit whatever it had
+        // become by then — a bug in the fuzzer wearing the costume of a bug in the protocol.
+        let frozen = packet;
+        if (typeof(packet) == "object") {
+            if (packet.build != null) { frozen = packet.build(); }
+        }
+
+        let now = time_ms();
+        let jitter = 0;
+        if (randint(1, 100) <= cfg.percent) {
+            jitter = randint(1, cfg.delay_ms);
+        }
+
+        // The heart of it: never earlier than the previous packet on this connection.
+        let at = now + jitter;
+        if (at < schedule.at) { at = schedule.at; }
+        schedule.at = at;
+
+        let wait = at - now;
+        if (wait <= 0) {
+            original(frozen);
+            return;
+        }
+        spawn(async fn() {
+            sleep(wait / 1000.0);
+            original(frozen);
+        });
+    };
+
+    return connection;
+}
