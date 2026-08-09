@@ -310,8 +310,14 @@ export fn Game(server) {
     };
 
     game.decode_map = fn() {
-        self.map = Map(self.map_data, self);
+        // .buf, not the accumulator: Map() and everything downstream of it want the bytes.
+        self.map = Map(self.map_data.buf, self);
+        // BOTH, and map_bytes is the one that is easy to forget. `map_data == null` is what
+        // says "the next MAP_UPLOAD packet is a length, not a chunk", so leaving map_bytes at
+        // the old map's size is harmless today and would be a silent truncation the moment
+        // anything read it. A host CAN change map: they back out of the lobby and pick again.
         self.map_data = null;
+        self.map_bytes = 0;
     };
 
     game.update_player_count = fn() {

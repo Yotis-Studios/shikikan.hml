@@ -1,0 +1,67 @@
+// chunked.hml — reassembling something that arrives as a run of packets
+//
+// Two transfers have this shape: MAP_UPLOAD (the host sends its map on entering the lobby) and
+// GAME_SAVE (the host sends the whole match state so a late joiner can catch up). Both are a
+// length packet followed by chunks of at most 250 bytes, and both carried their own copy of the
+// reassembly. Both copies were broken, in the same two ways, and neither had ever run:
+//
+//   1. `buffer(0)` — Hemlock refuses a zero-length buffer ("buffer() size must be positive").
+//      The port took it from gn.js, where an empty Buffer is ordinary.
+//
+//   2. `data = data + part` — Hemlock has no `+` on buffers ("Binary operation requires numeric
+//      operands"). In JavaScript that is Buffer.concat territory and reads as obviously correct.
+//
+// Neither is visible to `hemlock check`: both are runtime type errors on a path no test reached,
+// and the first throws before the second is ever evaluated — so fixing one alone just moves the
+// failure a line down, which is what made this worth doing once rather than twice.
+//
+// The total length is known before any chunk arrives, so this allocates ONCE and writes at a
+// running offset rather than growing. That also gives the overflow check somewhere to live: a
+// chunk that would run past the announced length is a broken or hostile upload.
+
+// A transfer of `total` bytes, assembled from chunks.
+//
+// REFUSES rather than clamps an unusable length: zero or negative means a broken client, and
+// quietly substituting some other number hides that at the one moment it is worth knowing.
+// Returns null, which the caller must check.
+export fn ChunkedUpload(total) {
+    if (total == null) { return null; }
+    if (total <= 0) { return null; }
+
+    return {
+        buf: buffer(total),
+        total: total,
+        filled: 0,
+
+        // Copy one chunk in. Returns true once the whole transfer has arrived.
+        //
+        // BYTE AT A TIME, because Hemlock buffers have no bulk copy. A buffer's methods are
+        // `read_<type>` / `write_<type>` where the suffix names a numeric type, so `write_buffer`
+        // parses as a method call and then fails to resolve `buffer` as a type — which reports as
+        // "Unknown buffer method" and looks like the method simply not existing.
+        //
+        // Maps are a few KB and this runs once per lobby, so the loop is not worth replacing with
+        // something cleverer that would need its own paragraph.
+        add: fn(part) {
+            if (part == null) { return false; }
+            let n = part.length;
+            if (self.filled + n > self.total) {
+                // Truncate rather than write past the end. A short transfer is recoverable — it
+                // never completes, and the lobby stays in setup where somebody can see it. A
+                // write past the end of the buffer is not.
+                n = self.total - self.filled;
+            }
+            let i = 0;
+            while (i < n) {
+                self.buf.write_u8(self.filled + i, part.read_u8(i));
+                i = i + 1;
+            }
+            self.filled = self.filled + n;
+            return self.filled >= self.total;
+        },
+
+        complete: fn() {
+            return self.filled >= self.total;
+        },
+    };
+}
