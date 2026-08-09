@@ -219,6 +219,24 @@ export fn PacketHandler(connection_manager) {
                     connection.broadcast(packet);
                 }
 
+            } else if (packet.net_id == id.GAME_NUM_PLAYERS) {
+                // The host asks; the SERVER decides. A client that asks for more seats than the
+                // map has, or an odd count, gets the clamped value back like everybody else --
+                // so the lobby cannot be pushed into a state no map can satisfy by a client that
+                // is out of date, modified, or simply wrong.
+                if (is_host) {
+                    // set_num_players clamps and returns what it settled on -- see game.hml.
+                    let agreed = g.set_num_players(packet.get(0));
+
+                    // REBUILT, NOT RELAYED. The value that goes out is the CLAMPED one. Relaying
+                    // the incoming packet would tell the other clients what was ASKED for, and a
+                    // request that hit a bound would leave the host one step ahead of the lobby --
+                    // the exact disagreement this packet exists to remove.
+                    let np_packet = Packet(id.GAME_NUM_PLAYERS);
+                    np_packet.add(agreed);
+                    self.server.broadcast(np_packet);
+                }
+
             } else if (packet.net_id == id.GAME_ONEVONE) {
                 if (is_host) {
                     g.set_one_v_one(packet.get(0));
