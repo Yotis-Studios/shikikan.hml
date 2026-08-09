@@ -126,41 +126,73 @@ export fn Session(server, kick_packet_id) {
             return count;
         },
 
+        // Auto-shutdown watchdogs.
+        //
+        // ==================================================================================
+        // `spawn` COPIES ITS ARGUMENTS. A CLOSURE SEES THE LIVE OBJECT.
+        // ==================================================================================
+        //
+        // Every one of these used to take the session as a spawn ARGUMENT, and a spawned task
+        // receives a deep copy — a snapshot of the session as it was at startup, when every
+        // connection slot is null and every heartbeat is null. Measured, not inferred:
+        //
+        //     let obj = { v: 1 };
+        //     spawn(async fn(o) { sleep(1.0); print(o.v); }, obj);   // prints 1
+        //     spawn(async fn()  { sleep(1.0); print(obj.v); });      // prints 42
+        //     obj.v = 42;
+        //
+        // So the host-connect watchdog was asking a frozen copy whether the host had connected,
+        // and the answer was always no: EVERY LOBBY WAS KILLED SIXTY SECONDS AFTER IT STARTED,
+        // with a full roster in it, mid-match. The client is told only "Server closed.", so it
+        // reads as the server crashing or the network dropping.
+        //
+        // The heartbeat watchdog had the mirror-image failure and was harmless for it — its
+        // copy's heartbeats are all null, so it never fired and dead connections were never
+        // reaped. Two watchdogs, one useless and one actively hostile, from one cause.
+        //
+        // Nothing could see it. It needs a lobby to stay up for more than a minute, which means
+        // two clients, a map upload and a started match — and the single-client test flow
+        // finishes in about fifteen seconds.
+        //
+        // The rule for this file: a spawned task reads shared state through the CLOSURE. If you
+        // find yourself passing a struct to spawn, that struct is about to stop changing.
         start_timers: fn(host_slot, on_timeout) {
             let sess = self;
 
-            // Host connect timeout
-            spawn(async fn(s, h, cb) {
+            // Host connect timeout — the lobby is pointless if whoever asked for it never turns
+            // up. Closure over `sess`, so this sees the connection that arrives after it starts.
+            spawn(async fn() {
                 sleep(HOST_CONNECT_TIMEOUT / 1000.0);
-                if (s.connections[h] == null && !s._closed) {
-                    cb("host_timeout");
+                if (sess.connections[host_slot] == null && !sess._closed) {
+                    on_timeout("host_timeout");
                 }
-            }, sess, host_slot, on_timeout);
+            });
 
-            // Heartbeat check every 60s
-            spawn(async fn(s, cb) {
-                while (!s._closed) {
+            // Heartbeat check every 60s. Clients ACK every 10s; a slot that has said nothing for
+            // a full minute has gone away without closing its socket.
+            spawn(async fn() {
+                while (!sess._closed) {
                     sleep(HEARTBEAT_TIMEOUT / 1000.0);
                     let now = time_ms();
                     let i = 0;
-                    while (i < s.heartbeats.length) {
-                        if (s.heartbeats[i] != null) {
-                            if (s.heartbeats[i] < (now - HEARTBEAT_TIMEOUT)) {
-                                cb("heartbeat:" + i);
+                    while (i < sess.heartbeats.length) {
+                        if (sess.heartbeats[i] != null) {
+                            if (sess.heartbeats[i] < (now - HEARTBEAT_TIMEOUT)) {
+                                on_timeout("heartbeat:" + i);
                             }
                         }
                         i = i + 1;
                     }
                 }
-            }, sess, on_timeout);
+            });
 
-            // 24 hour max lifetime
-            spawn(async fn(s, cb) {
+            // 24 hour max lifetime.
+            spawn(async fn() {
                 sleep(MAX_LIFETIME / 1000.0);
-                if (!s._closed) {
-                    cb("max_lifetime");
+                if (!sess._closed) {
+                    on_timeout("max_lifetime");
                 }
-            }, sess, on_timeout);
+            });
         },
 
         close: fn() {
