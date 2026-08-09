@@ -336,6 +336,24 @@ export fn ConnectionManager(server, game) {
     // Start session timers
     cm.session.start_timers(game.host, fn(reason) {
         if (reason == "host_timeout") {
+            // ONLY BEFORE THE MATCH STARTS. This watchdog means "nobody ever turned up to the
+            // lobby they asked for". Once a game is running, an empty host slot means the host
+            // LEFT -- which is a migration, handled by remove_connection, and emphatically not a
+            // reason to end everyone else's match.
+            //
+            // Without this guard, killing the host killed the whole session: the survivors were
+            // disconnected mid-match and the server exited. Found by RW_NET_KILL=host, which is
+            // the first thing that ever pulled a host out of a live game.
+            //
+            // Why it fires late at all: the task sleeps HOST_CONNECT_TIMEOUT once and then
+            // checks. Its continuation is not guaranteed to run the instant the sleep expires --
+            // it runs when the event loop next gets to it, and in a quiet match that turned out
+            // to be the moment the host's socket closed. So the check ran with exactly the state
+            // that makes it fire, an hour of match-time after it was relevant.
+            if (game.game_started) {
+                print("Ignoring host_timeout: the match has started, this is a migration");
+                return;
+            }
             cm.kill_server(1);
         } else if (reason == "max_lifetime") {
             cm.kill_server(24);
