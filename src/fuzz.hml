@@ -40,11 +40,30 @@ import { getenv } from "@stdlib/env";
 import { sleep, time_ms } from "@stdlib/time";
 import { randint } from "@stdlib/random";
 
+// UNSET AND EMPTY ARE THE SAME THING HERE, and treating them differently took the whole
+// server down.
+//
+// `getenv` returns "" for a variable that is SET BUT EMPTY, which is not null -- so the null
+// guards below passed and `number("")` threw "Cannot convert empty string to number" during
+// startup, before a single connection was accepted. The router spawns one shikikan per lobby
+// and inherits its environment, so every lobby died instantly and the client saw only "Failed
+// to host online game!".
+//
+// That is exactly the shape an env-file deployment produces: `FUZZ_DELAY_MS=` on a line of
+// its own is set-and-empty, and reads as "off" to every human who looks at it. The harness
+// produced it by passing FUZZ_DELAY_MS='$FUZZ_MS' unconditionally, which is empty whenever
+// RW_FUZZ_MS is not given -- so the fuzzer, whose entire purpose is optional, had made itself
+// mandatory.
+//
+// Hemlock reports the TOP-LEVEL call site rather than the throwing line, so this arrived as
+// `server.hml:45` with nothing pointing at this file.
 export fn fuzz_config() {
     let delay = getenv("FUZZ_DELAY_MS");
     let percent = getenv("FUZZ_PERCENT");
     if (delay == null) { return null; }
     if (percent == null) { return null; }
+    if (delay == "") { return null; }
+    if (percent == "") { return null; }
 
     let d = number(delay);
     let p = number(percent);
