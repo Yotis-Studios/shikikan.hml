@@ -254,6 +254,12 @@ export fn ConnectionManager(server, game) {
         },
 
         kill_server: fn(code) {
+            // NAME THE CODE. Every path out of a lobby ends here and the client is told only
+            // "Server closed.", so from the outside a host timeout, a heartbeat expiry, a
+            // malformed upload and the 24-hour cap are indistinguishable -- and three of the
+            // four look like a network fault to the player. The codes are: 0 malformed
+            // upload, 1 no host connected in time, 2 last connection left, 24 max lifetime.
+            print("Killing server, code " + code);
             self.session.kick_all("Server closed.");
             self.session.close();
             self.server.close();
@@ -335,9 +341,14 @@ export fn ConnectionManager(server, game) {
             cm.kill_server(24);
         } else {
             // Heartbeat timeout — parse slot from "heartbeat:N"
+            //
+            // `number`, because split() yields STRINGS and `connections["1"]` is not
+            // `connections[1]`. The reason is built by joining the index onto a label, so the
+            // number survives the round trip only if it is converted back.
             let parts = reason.split(":");
             if (parts.length == 2 && parts[0] == "heartbeat") {
-                let slot = parts[1];
+                let slot = number(parts[1]);
+                print("Heartbeat timeout on slot " + slot);
                 let conn = cm.connections[slot];
                 if (conn != null) {
                     cm.remove_connection(conn);
