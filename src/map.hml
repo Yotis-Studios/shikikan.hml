@@ -21,33 +21,33 @@ export fn Map(compressed_data, game) {
 
     // Decompress and parse map data
     let decompressed = inflate_decompress(compressed_data);
-    // First line is JSON metadata
+
+    // First line is JSON metadata; the tile grid follows it.
+    //
+    // A RUNE LITERAL, not a string. Indexing a Hemlock string yields a `rune`, and comparing a
+    // rune to a string is always FALSE -- it warns rather than throwing, so this scan never
+    // matched, ran to the end of the file, and handed the WHOLE map to the JSON parser.
+    //
+    // Two things made it hard to read in the log. The failure surfaced as "Unexpected trailing
+    // characters in JSON" from the parser, several steps downstream of the comparison that
+    // caused it; and the warning that named the real problem was emitted once per character of
+    // the map -- 361 identical lines, burying everything else the server had to say.
     let newline_idx = 0;
     while (newline_idx < decompressed.length) {
-        if (decompressed[newline_idx] == "\n") {
+        if (decompressed[newline_idx] == '\n') {
             break;
         }
         newline_idx = newline_idx + 1;
+    }
+    // No newline anywhere means this is not a .rwm at all. Say so here rather than letting the
+    // JSON parser report it, since its message describes a symptom of this one.
+    if (newline_idx >= decompressed.length) {
+        throw "map data has no metadata line";
     }
     let meta_str = decompressed.slice(0, newline_idx);
 
     map.hash = sha1(decompressed);
     map.meta = parse(meta_str);
-
-    // Broadcast hash to all clients
-    let hash_packet = Packet(id.MAP_HASH);
-    hash_packet.add(map.hash);
-    game.server.broadcast(hash_packet);
-
-    // Set player count from map bases
-    let num_bases = map.get_num_bases();
-    if (!game.onevone) {
-        game.set_num_players(num_bases);
-    }
-    game.num_bases = num_bases;
-
-    send_event("mapHash", map.hash);
-    send_event("mapName", map.meta.name);
 
     map.send_data_to_connection = fn(connection) {
         let tot_len = self.data.length;
@@ -84,6 +84,34 @@ export fn Map(compressed_data, game) {
         }
         return 4;
     };
+
+    // EVERYTHING THAT RUNS AT CONSTRUCTION GOES HERE, BELOW EVERY METHOD.
+    //
+    // This block used to sit above them and called `map.get_num_bases()`, which does not exist
+    // yet at that point: the struct literal declares the data fields and the methods are
+    // assigned afterwards, one at a time. It threw "Object has no method 'get_num_bases'" --
+    // and the map upload is the only thing that ever builds a Map, so nothing had run it.
+    //
+    // Keeping the ordering as a RULE rather than as a fix for one call: any method added below
+    // is safe to use from here, and nothing here needs checking against how far down the file
+    // it happens to sit.
+
+    // Every client is told the hash so it can say whether it already has this map.
+    let hash_packet = Packet(id.MAP_HASH);
+    hash_packet.add(map.hash);
+    game.server.broadcast(hash_packet);
+
+    // The map decides the roster: its base count is the seat count, and set_num_players clamps
+    // and evens it. 1v1 is exempt because it fixes the roster itself.
+    let num_bases = map.get_num_bases();
+    if (!game.onevone) {
+        game.set_num_players(num_bases);
+    }
+    game.num_bases = num_bases;
+
+    // GameRouter lists lobbies by these.
+    send_event("mapHash", map.hash);
+    send_event("mapName", map.meta.name);
 
     return map;
 }

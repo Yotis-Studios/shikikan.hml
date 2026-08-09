@@ -3,6 +3,7 @@
 import { Packet } from "Yotis-Studios/gn.hml";
 import * as id from "./id.hml";
 import { SaveData } from "./save_data.hml";
+import { ChunkedUpload } from "./chunked.hml";
 import { send_event } from "../lib/lobby.hml";
 import { randint, randf } from "@stdlib/random";
 import { time_ms } from "@stdlib/time";
@@ -269,18 +270,17 @@ export fn PacketHandler(connection_manager) {
                 if (is_host) {
                     if (g.game_data == null) {
                         let data_length = packet.get(0);
-                        if (data_length == null || data_length < 0 || data_length > 1000000) {
+                        if (data_length == null || data_length <= 0 || data_length > 1000000) {
                             cm.kill_server(0);
                         } else {
                             print("Expecting " + data_length + " bytes for save data");
-                            g.game_data = buffer(0);
+                            g.game_data = ChunkedUpload(data_length);
                             g.game_bytes = data_length;
                         }
                     } else {
                         let part = packet.get(0);
-                        g.game_data = g.game_data + part;
-                        if (g.game_data.length == g.game_bytes) {
-                            let save_data = SaveData(g.game_data);
+                        if (g.game_data.add(part)) {
+                            let save_data = SaveData(g.game_data.buf);
                             save_data.inflate(fn(data) {
                                 g.turn = data.turnNumber;
                                 g.cur_player = data.curPlayer;
@@ -296,7 +296,10 @@ export fn PacketHandler(connection_manager) {
                                     }
                                     pi = pi + 1;
                                 }
+                                // Both, so the NEXT sync reads its first packet as a length.
+                                // See game.decode_map for the same pair on the map side.
                                 g.game_data = null;
+                                g.game_bytes = 0;
                             });
                         }
                     }
@@ -305,18 +308,22 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.MAP_UPLOAD) {
                 if (is_host) {
                     if (g.map_data == null) {
+                        // The length packet. `null` and non-positive are rejected here rather
+                        // than inside ChunkedUpload so the server can kill the lobby: a client
+                        // that announces a nonsense size is not one to keep talking to, and
+                        // the size is the only thing standing between it and an allocation of
+                        // its choosing.
                         let data_length = packet.get(0);
-                        if (data_length > 100000) {
+                        if (data_length == null || data_length <= 0 || data_length > 100000) {
                             cm.kill_server(0);
                         } else {
                             print("Expecting " + data_length + " bytes for map data");
-                            g.map_data = buffer(0);
+                            g.map_data = ChunkedUpload(data_length);
                             g.map_bytes = data_length;
                         }
                     } else {
                         let part = packet.get(0);
-                        g.map_data = g.map_data + part;
-                        if (g.map_data.length == g.map_bytes) {
+                        if (g.map_data.add(part)) {
                             g.decode_map();
                         }
                     }

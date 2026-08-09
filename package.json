@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "lib/index.hml",
   "dependencies": {
-    "Yotis-Studios/gn.hml": "^0.2.0"
+    "Yotis-Studios/gn.hml": "^0.2.2"
   },
   "devDependencies": {}
 }
