@@ -77,6 +77,11 @@ export let GAME_ONEVONE = 114;
 // which is why the client's stepper was offline-only.
 export let GAME_NUM_PLAYERS = 115;
 
+// 1.14. How the match is won (see MATCH_MODE client-side). Relayed rather than
+// clamped -- unlike the roster size there is no map property a mode can exceed, so
+// the server records it for the joiner handshake and passes it on unchanged.
+export let GAME_MODE = 116;
+
 export let DECK_RESET = 140;
 export let DECK_VALUES = 141;
 export let DECK_COST = 142;

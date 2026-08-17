@@ -103,6 +103,10 @@ export fn ConnectionManager(server, game) {
             gametimer_packet.add(g.game_timer);
             connection.send(gametimer_packet);
 
+            let mode_packet = Packet(id.GAME_MODE);
+            mode_packet.add(g.game_mode);
+            connection.send(mode_packet);
+
             let tier_packet = Packet(id.GAME_TIER_OPTIONS);
             tier_packet.add(g.tier_options);
             connection.send(tier_packet);

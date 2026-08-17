@@ -30,6 +30,7 @@ export fn Game(server) {
         random_bases: false,
         bases: [0, 1, 2, 3],
         game_length: 0,
+        game_mode: 0,
         game_speed: 1,
         game_timer: 120,
         sudden_death: false,
@@ -360,6 +361,11 @@ export fn Game(server) {
     game.set_game_length = fn(len) {
         self.game_length = len;
         send_event("gameLength", len);
+    };
+
+    game.set_game_mode = fn(mode) {
+        self.game_mode = mode;
+        send_event("gameMode", mode);
     };
 
     game.set_game_speed = fn(speed) {

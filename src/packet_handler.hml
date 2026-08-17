@@ -245,6 +245,12 @@ export fn PacketHandler(connection_manager) {
                     if (g.onevone) { cm.set_one_v_one_players(); }
                 }
 
+            } else if (packet.net_id == id.GAME_MODE) {
+                if (is_host) {
+                    g.set_game_mode(packet.get(0));
+                    connection.broadcast(packet);
+                }
+
             } else if (packet.net_id == id.GAME_TIER_OPTIONS) {
                 if (is_host) {
                     g.set_tier_options(packet.get(0));
