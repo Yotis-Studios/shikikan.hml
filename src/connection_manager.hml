@@ -128,6 +128,25 @@ export fn ConnectionManager(server, game) {
             bases_packet.add(g.random_bases);
             connection.send(bases_packet);
 
+            // Three settings a host can change that were NOT in this replay, found by
+            // auditing every settable value against this list -- the same audit that caught
+            // GAME_TEAMS clobbering GAME_MODE's forced value (fixed by making the stored
+            // settings self-consistent; see set_game_mode). A joiner missing num_players
+            // derives the roster from the map and disagrees with the lobby about which slots
+            // exist -- the exact disagreement GAME_NUM_PLAYERS was added to remove, reopened
+            // for anyone who joins after the host resizes.
+            let np_packet = Packet(id.GAME_NUM_PLAYERS);
+            np_packet.add(g.num_players);
+            connection.send(np_packet);
+
+            let speed_packet = Packet(id.GAME_SET_SPEED);
+            speed_packet.add(g.game_speed);
+            connection.send(speed_packet);
+
+            let spec_packet = Packet(id.LOBBY_SPECTATORS);
+            spec_packet.add(g.spectators);
+            connection.send(spec_packet);
+
             // Deck options
             let deck_packet = Packet(id.GAME_DECK);
             deck_packet.add(g.deck.cards);

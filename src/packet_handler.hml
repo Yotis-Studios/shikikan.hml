@@ -414,6 +414,11 @@ export fn PacketHandler(connection_manager) {
                 }
 
             } else if (packet.net_id == id.PLAYER_ATTACK) {
+                // The ONE in-turn action that was missing this gate. Every peer's handler
+                // applies PLAYER_ATTACK to the CURRENT player, so an out-of-turn sender was
+                // firing somebody else's gun -- and in sudden death the server even rolled
+                // the luck for it. Found by auditing every action branch against the gate.
+                if (!valid_player_packet) { return; }
                 if (g.sudden_death) {
                     packet.add(randf(0.0, 1.0));
                     self.server.broadcast(packet);
