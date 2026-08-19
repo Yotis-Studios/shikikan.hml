@@ -478,6 +478,7 @@ export fn PacketHandler(connection_manager) {
                     || packet.net_id == id.PLAYER_IS_ATTACK
                     || packet.net_id == id.PLAYER_SET_ATTACK
                     || packet.net_id == id.PLAYER_ZOMBIE_TARGET
+                    || packet.net_id == id.PLAYER_RESCUE
                     || packet.net_id == id.PLAYER_RELOAD
                     || packet.net_id == id.PLAYER_CANCEL
                     || packet.net_id == id.PLAYER_CONFIRM

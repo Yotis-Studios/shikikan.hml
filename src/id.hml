@@ -91,6 +91,9 @@ export let DECK_WEIGHT = 144;
 // Zombies mode: the shooter's chosen zombie, named by spawn ordinal (netId). Pure relay --
 // the horde itself is deterministic lockstep on every client and sends nothing.
 export let PLAYER_ZOMBIE_TARGET = 145;
+// A rescue: the current player picks the downed teammate (slot index) back up. Pure relay,
+// gated like every other in-turn action.
+export let PLAYER_RESCUE = 146;
 
 export let COIN_SPAWN = 150;
 export let COIN_GET = 151;
