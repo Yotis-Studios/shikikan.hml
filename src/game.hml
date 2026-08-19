@@ -365,6 +365,13 @@ export fn Game(server) {
 
     game.set_game_mode = fn(mode) {
         self.game_mode = mode;
+        // Zombies (mode 2) is cooperative: one team, always. The client forces this locally on
+        // selecting the mode, but the SERVER's stored num_teams is what the join-time settings
+        // replay sends -- and it sends GAME_TEAMS AFTER GAME_MODE, so a stale split here
+        // clobbered the joiner's forced value and its roster baked into enemy teams. One
+        // measured symptom: a joiner's AI shooting its own teammates while the host rejected
+        // every such attack as friendly fire.
+        if (mode == 2) { self.num_teams = 1; }
         send_event("gameMode", mode);
     };
 
