@@ -88,6 +88,10 @@ export let DECK_COST = 142;
 export let DECK_TIER = 143;
 export let DECK_WEIGHT = 144;
 
+// Zombies mode: the shooter's chosen zombie, named by spawn ordinal (netId). Pure relay --
+// the horde itself is deterministic lockstep on every client and sends nothing.
+export let PLAYER_ZOMBIE_TARGET = 145;
+
 export let COIN_SPAWN = 150;
 export let COIN_GET = 151;
 export let COIN_CONFIRM = 152;
