@@ -250,7 +250,18 @@ export fn Game(server) {
         self.game_started = true;
         send_event("isStarted", 1);
 
-        let is_teams = self.num_bases != self.num_teams;
+        // THE CLIENT'S RULE, VERBATIM: initMatchTurnOrder says
+        // `turnOffset = numTeams == 2 ? 1 : 0` -- two-team splits start on player 1,
+        // everything else on player 0. This used to be a second, hand-written copy of that
+        // rule (`num_bases != num_teams`), and the two disagreed the moment a mode existed
+        // where teams and bases legitimately differ: zombies (num_teams 1, bases 4) made the
+        // server start at turn 1 while every client started at turn 0, so the server's
+        // valid_player_packet gate silently dropped every packet the real current player
+        // sent -- the whole match dead at the first action, no error anywhere. The same
+        // mismatch was latent for a reduced roster (GAME_NUM_PLAYERS) on a bigger map.
+        // One rulebook: if the client's rule changes, change THIS line to match, not to
+        // something equivalent-looking.
+        let is_teams = self.num_teams == 2;
         let turn_offset = 0;
         if (is_teams) { turn_offset = 1; }
         self.turn = turn_offset;
