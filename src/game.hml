@@ -438,6 +438,22 @@ export fn Game(server) {
 
     game.toggle_deck_card = fn(i, enabled) { self.deck.cards[i] = enabled; };
 
+    // How many seats actually take turns: the ROSTER, not the map. A four-base lobby
+    // resized to a duel rotates over two players, exactly as every client does (they bake
+    // numPlayers seats) -- rotating over num_bases put the server two seats out of step
+    // with the whole lobby the first time a reduced roster played, and every packet from
+    // the real current player was then dropped as out-of-turn. 1v1 is the exception on
+    // both ends: every base plays (the leads' CPU teammates take turns), and
+    // set_one_v_one sets num_players to 2 for its own reasons, so it cannot be the
+    // rotation length there.
+    game.turn_rotation = fn() {
+        if (self.onevone) { return self.num_bases; }
+        let n = self.num_players;
+        if (n < 2) { n = 2; }
+        if (n > self.num_bases) { n = self.num_bases; }
+        return n;
+    };
+
     game.end_turn = fn() {
         let luck = randf(0.0, 1.0);
         let luck_packet = Packet(id.PLAYER_LUCK);
@@ -445,7 +461,7 @@ export fn Game(server) {
         self.server.broadcast(luck_packet);
 
         self.turn = self.turn + 1;
-        self.cur_player = self.turn % self.num_bases;
+        self.cur_player = self.turn % self.turn_rotation();
 
         // Coin spawn logic
         if (self.turn >= self.last_coin + 10 && self.map.coins.length < 3) {

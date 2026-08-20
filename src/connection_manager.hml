@@ -74,8 +74,12 @@ export fn ConnectionManager(server, game) {
             self.connections[conn_id] = connection;
             self.session.set_connection(conn_id, connection);
 
-            // Add to player slots
-            if (conn_id < g.num_bases || g.spectators) {
+            // Add to player slots. The seat boundary is the ROSTER (turn_rotation), not the
+            // map: a four-base lobby resized to two seats two players, and a third arrival
+            // spectates rather than occupying a chair no turn will ever reach. (Resizing
+            // BELOW already-seated connections is not handled here or anywhere -- the lobby
+            // UI does not offer it; noted rather than solved.)
+            if (conn_id < g.turn_rotation() || g.spectators) {
                 g.init_player_connection(conn_id, connection);
             } else {
                 self.session.kick(connection, "Game is full!");

@@ -40,7 +40,7 @@ export fn PacketHandler(connection_manager) {
             let i = cm.get_id_from_connection(connection);
             let is_host = g.host == i;
             let is_player = i != null && i < g.num_bases;
-            let cur_player_idx = g.turn % g.num_bases;
+            let cur_player_idx = g.turn % g.turn_rotation();
             let half = g.num_bases / 2;
             let is_onevone = g.onevone;
             let is_onevone_team = is_onevone && ((i < half && cur_player_idx < half) || (i >= half && cur_player_idx >= half));
