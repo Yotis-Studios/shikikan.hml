@@ -416,7 +416,16 @@ export fn Game(server) {
         if (want > self.num_bases) { want = self.num_bases; }
         if (want < 2) { want = 2; }
         want = want - (want % 2);
+        // THE CLIENT'S RULE, VERBATIM (setNumPlayers): Free-For-All is num_teams ==
+        // numPlayers, a RELATIONSHIP -- re-established at the new count, not preserved as a
+        // number. Every client applies this when it applies GAME_NUM_PLAYERS, so a server
+        // that does not moves alone: the clients settled on num_teams 2 for a resized duel,
+        // the server kept 4, the start offsets (num_teams == 2, see start_game) diverged,
+        // and the server dropped the real current player's every packet. The same
+        // one-rulebook failure as the start_game offset bug, one field over.
+        let was_ffa = self.num_teams == self.num_players;
         self.num_players = want;
+        if (was_ffa) { self.num_teams = want; }
         send_event("numPlayers", want);
         return want;
     };
