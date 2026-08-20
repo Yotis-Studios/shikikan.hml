@@ -101,13 +101,27 @@ export fn Map(compressed_data, game) {
     hash_packet.add(map.hash);
     game.server.broadcast(hash_packet);
 
-    // The map decides the roster: its base count is the seat count, and set_num_players clamps
-    // and evens it. 1v1 is exempt because it fixes the roster itself.
+    // THE SERVER OWNS THE ROSTER COUNT (PROTOCOL.md 0b). A new map re-derives it here and
+    // BROADCASTS the answer -- clients no longer derive numPlayers from their own map load,
+    // so an answer that never travels is a lobby that never learns it. Two rules:
+    //
+    //   - the host never chose a size: the map fills the roster (capacity), as ever;
+    //   - the host chose one (GAME_NUM_PLAYERS): the choice survives the map change,
+    //     re-clamped to the new capacity.
+    //
+    // num_bases is assigned BEFORE set_num_players, which clamps against it -- the old order
+    // clamped against the PREVIOUS map's capacity, so a six-base map uploaded after a
+    // four-base one seated four. 1v1 stays exempt: it fixes the roster itself.
     let num_bases = map.get_num_bases();
-    if (!game.onevone) {
-        game.set_num_players(num_bases);
-    }
     game.num_bases = num_bases;
+    if (!game.onevone) {
+        let want = num_bases;
+        if (game.host_set_players) { want = game.num_players; }
+        let agreed = game.set_num_players(want);
+        let np_packet = Packet(id.GAME_NUM_PLAYERS);
+        np_packet.add(agreed);
+        game.server.broadcast(np_packet);
+    }
 
     // GameRouter lists lobbies by these.
     send_event("mapHash", map.hash);

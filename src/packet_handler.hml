@@ -249,6 +249,9 @@ export fn PacketHandler(connection_manager) {
                 // is out of date, modified, or simply wrong.
                 if (is_host) {
                     // set_num_players clamps and returns what it settled on -- see game.hml.
+                    // The explicit choice is remembered so a later map change re-clamps it
+                    // instead of resetting to the new map's capacity.
+                    g.host_set_players = true;
                     let agreed = g.set_num_players(packet.get(0));
 
                     // REBUILT, NOT RELAYED. The value that goes out is the CLAMPED one. Relaying

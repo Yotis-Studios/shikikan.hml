@@ -17,6 +17,11 @@ export fn Game(server) {
         game_started: false,
         num_bases: 4,
         num_players: 4,
+        // Whether the HOST ever explicitly chose a roster size (GAME_NUM_PLAYERS). Decides
+        // what a new map does to the count: never chosen -> the map fills the roster
+        // (capacity), chosen -> the choice survives the map change, re-clamped to the new
+        // capacity. See load_map.
+        host_set_players: false,
         num_teams: 4,
         onevone: false,
         turn: 0,
