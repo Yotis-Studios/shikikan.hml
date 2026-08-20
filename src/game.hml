@@ -43,8 +43,8 @@ export fn Game(server) {
         // somebody chooses a damage mode, at which point it is overwritten.
         attack_damage: 0,
         tier_options: 0,
-        turn_timeout: null,
         lobby_password: "",
+        lobby_name: "",
         deck: Deck(),
         spectators: true,
         last_coin: 0,
@@ -439,7 +439,6 @@ export fn Game(server) {
         luck_packet.add(luck);
         self.server.broadcast(luck_packet);
 
-        self.cancel_turn_timeout();
         self.turn = self.turn + 1;
         self.cur_player = self.turn % self.num_bases;
 
@@ -452,10 +451,6 @@ export fn Game(server) {
                 self.map.spawn_coin();
             }
         }
-    };
-
-    game.cancel_turn_timeout = fn() {
-        self.turn_timeout = null;
     };
 
     // Initialize

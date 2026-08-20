@@ -2,6 +2,23 @@
 
 import { Packet } from "Yotis-Studios/gn.hml";
 import * as id from "./id.hml";
+
+// The two echo-amplified packets (MESSAGE, PLAYER_CHAT) get a floor under them here: a
+// length cap, because one oversized packet becomes N oversized packets on the broadcast,
+// and a per-connection rate window, because these are the only ids a client can make the
+// server multiply for free. Dropped silently -- a spammer learning the exact limit from an
+// error is a spammer with a better spammer. `connection?.` because Hemlock THROWS on
+// reading a field an object does not have (see connection_manager's uid note).
+fn chat_ok(connection, msg, now) {
+    if (msg == null) { return false; }
+    if (msg.length > 500) { return false; }
+    if (connection?.chat_win == null || now - connection.chat_win > 5000) {
+        connection.chat_win = now;
+        connection.chat_n = 0;
+    }
+    connection.chat_n = connection.chat_n + 1;
+    return connection.chat_n <= 10;
+}
 import { SaveData } from "./save_data.hml";
 import { ChunkedUpload } from "./chunked.hml";
 import { send_event } from "../lib/lobby.hml";
@@ -33,7 +50,11 @@ export fn PacketHandler(connection_manager) {
             let valid_player_packet = (is_host || is_player) && (is_cur_turn || (is_host && cur_player_is_cpu));
 
             if (packet.net_id == id.CLIENT_ACK) {
-                cm.session.update_heartbeat(i);
+                // A connection held at the password gate still ACKs, and its `i` is null --
+                // update_heartbeat(null) indexes the heartbeat array with it, which is
+                // unverified behaviour at best. An unadmitted connection has no heartbeat
+                // slot to keep alive; the password prompt's own timeout owns it.
+                if (i != null) { cm.session.update_heartbeat(i); }
                 let ack_packet = Packet(id.CLIENT_ACK);
                 ack_packet.add(time_ms() / 1000);
                 connection.send(ack_packet);
@@ -60,6 +81,7 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.MESSAGE) {
                 let message = packet.get(0);
+                if (!chat_ok(connection, message, time_ms())) { return; }
                 let msg_packet = Packet(id.MESSAGE);
                 msg_packet.add(message);
                 self.server.broadcast(msg_packet);
@@ -89,7 +111,9 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.PLAYER_CUSTOM) {
                 let j = packet.get(0);
                 let player = g.get_player(j);
-                if (player != null) {
+                // Your own slot, or the host dressing a CPU seat. The slot came from the
+                // packet with no check at all -- any client could recolour anyone.
+                if (player != null && (j == i || (is_host && player.is_cpu()))) {
                     player.eye_color = packet.get(1);
                     player.hair_color = packet.get(2);
                     player.uniform_color = packet.get(3);
@@ -101,7 +125,8 @@ export fn PacketHandler(connection_manager) {
                 let j = packet.get(0);
                 let hat = packet.get(1);
                 let player = g.get_player(j);
-                if (player != null) {
+                // Same ownership rule as PLAYER_CUSTOM.
+                if (player != null && (j == i || (is_host && player.is_cpu()))) {
                     player.hat = hat;
                     player.broadcast_hat();
                 }
@@ -129,9 +154,6 @@ export fn PacketHandler(connection_manager) {
                 connection.broadcast(tier_packet);
                 let the_player = g.get_player(i);
                 if (tier_choice == -1) { the_player.tier = the_player.tier + 1; }
-                if (the_player.tier == 4) {
-                    g.cancel_turn_timeout();
-                }
 
             } else if (packet.net_id == id.GAME_START) {
                 if (is_host) { g.start_game(); }
@@ -341,6 +363,7 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.PLAYER_CHAT) {
                 let team = packet.get(0);
                 let chat_msg = packet.get(1);
+                if (!chat_ok(connection, chat_msg, time_ms())) { return; }
                 let chat_packet = Packet(id.PLAYER_CHAT);
                 chat_packet.add(i);
                 chat_packet.add(team);
@@ -367,7 +390,13 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.PLAYER_SWAP) {
                 let j = packet.get(0);
-                if (g.get_player(i) != null && g.get_player(j) != null) {
+                // The client only OFFERS the swap button to the host, and to anyone for an
+                // empty/CPU seat -- the server enforced none of it, so any client could yank
+                // any human into any chair. This is the client's rule, written a second time;
+                // the one-rulebook tension is noted in PROTOCOL.md and accepted for three
+                // lines of lobby-phase gating.
+                if (g.get_player(i) != null && g.get_player(j) != null
+                    && (is_host || g.get_player(j).is_cpu())) {
                     let swap_packet = Packet(id.PLAYER_SWAP);
                     swap_packet.add(i);
                     swap_packet.add(j);
@@ -377,6 +406,9 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.LOBBY_NAME) {
                 if (is_host) {
+                    // Stored so add_connection can replay it -- joiners never learned the
+                    // lobby's name before; it went to the router event stream and nowhere else.
+                    g.lobby_name = packet.get(0);
                     send_event("name", packet.get(0));
                 }
 
@@ -387,10 +419,27 @@ export fn PacketHandler(connection_manager) {
                     let locked = 0;
                     if (g.lobby_password != "") { locked = 1; }
                     send_event("locked", locked);
-                } else if (g.lobby_password == given_pass) {
-                    cm.add_connection(connection);
                 } else {
-                    cm.session.kick(connection, "Incorrect Password");
+                    // BRUTE-FORCE FLOOR. Each wrong guess was kicked and reconnecting is
+                    // free, so retries were unlimited. Five failures arm a 30-second lockout
+                    // in which every guess -- right or wrong -- is refused; the window is
+                    // per-lobby rather than per-address because the transport offers no
+                    // reliable address, and a shared 30s pause costs an honest mistyper
+                    // little while capping a dictionary at ten guesses a minute.
+                    let now = time_ms();
+                    if (cm.pass_fails >= 5 && now - cm.pass_fail_at < 30000) {
+                        cm.session.kick(connection, "Too many attempts. Try again shortly.");
+                        return;
+                    }
+                    if (now - cm.pass_fail_at >= 30000) { cm.pass_fails = 0; }
+                    if (g.lobby_password == given_pass) {
+                        cm.pass_fails = 0;
+                        cm.add_connection(connection);
+                    } else {
+                        cm.pass_fails = cm.pass_fails + 1;
+                        cm.pass_fail_at = now;
+                        cm.session.kick(connection, "Incorrect Password");
+                    }
                 }
 
             } else if (packet.net_id == id.LOBBY_SPECTATORS) {
@@ -427,8 +476,13 @@ export fn PacketHandler(connection_manager) {
                 }
 
             } else if (packet.net_id == id.CPU_CHAR) {
-                if (is_host || is_onevone) {
-                    let j = packet.get(0);
+                let cpu_char_j = packet.get(0);
+                // Under 1v1 a lead may set characters for its OWN half only; is_host covers
+                // everything else. The old gate let either lead redress the opposing team.
+                let onevone_own_half = is_onevone && i != null
+                    && ((i < half && cpu_char_j < half) || (i >= half && cpu_char_j >= half));
+                if (is_host || onevone_own_half) {
+                    let j = cpu_char_j;
                     let char = packet.get(1);
                     let player = g.get_player(j);
                     if (player != null) {

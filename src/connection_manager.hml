@@ -14,6 +14,9 @@ export fn ConnectionManager(server, game) {
         server: server,
         game: game,
         session: Session(server, id.PLAYER_KICK),
+        // The password lockout's shared counter -- see LOBBY_PASSWORD in packet_handler.
+        pass_fails: 0,
+        pass_fail_at: 0,
         add_connection: fn(connection) {
             let g = self.game;
 
@@ -146,6 +149,15 @@ export fn ConnectionManager(server, game) {
             let spec_packet = Packet(id.LOBBY_SPECTATORS);
             spec_packet.add(g.spectators);
             connection.send(spec_packet);
+
+            // The lobby's name, which joiners never learned before -- stored by the host's
+            // LOBBY_NAME, replayed here. Skipped when unset so old clients with no handler
+            // for it see nothing new unless a name exists to tell them.
+            if (g.lobby_name != "") {
+                let name_packet = Packet(id.LOBBY_NAME);
+                name_packet.add(g.lobby_name);
+                connection.send(name_packet);
+            }
 
             // Deck options
             let deck_packet = Packet(id.GAME_DECK);
