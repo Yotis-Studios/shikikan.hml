@@ -27,7 +27,15 @@ export fn ConnectionManager(server, game) {
             let i = 0;
             while (i < self.connections.length) {
                 let c = self.connections[i];
-                if (c != null && c?.map_ack != g.map.hash) { return false; }
+                if (c != null) {
+                    // TWO steps, not one `!=`: an unacked connection's map_ack is null, and
+                    // a null-vs-string comparison in Hemlock is the rune-vs-string trap from
+                    // PROTOCOL.md 5b -- always false, no error -- which made this gate
+                    // vacuously true and the deferral never fire once.
+                    let acked = c?.map_ack;
+                    if (acked == null) { return false; }
+                    if (acked != g.map.hash) { return false; }
+                }
                 i = i + 1;
             }
             return true;
