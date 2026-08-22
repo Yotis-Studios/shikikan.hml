@@ -166,6 +166,7 @@ export fn PacketHandler(connection_manager) {
                 // the live game object on purpose -- spawn ARGUMENTS are deep-copied
                 // snapshots (the auto-shutdown bug), closures are not.
                 if (is_host) {
+                    print("GAME_START pressed: all_map_acked=" + cm.all_map_acked());
                     if (cm.all_map_acked()) { g.start_game(); }
                     else if (!g.pending_start) {
                         print("GAME_START deferred -- a client has not confirmed the map");
@@ -388,6 +389,7 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.MAP_ACK) {
                 connection.map_ack = packet.get(0);
+                print("MAP_ACK from " + i + " hash=" + packet.get(0));
                 if (g.pending_start && cm.all_map_acked()) {
                     g.pending_start = false;
                     g.start_game();
