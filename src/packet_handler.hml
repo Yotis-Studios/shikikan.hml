@@ -156,7 +156,30 @@ export fn PacketHandler(connection_manager) {
                 if (tier_choice == -1) { the_player.tier = the_player.tier + 1; }
 
             } else if (packet.net_id == id.GAME_START) {
-                if (is_host) { g.start_game(); }
+                // DEFERRED, NOT REFUSED, when somebody lacks the map: the crash this gate
+                // closes is a client swept into rmGame mid-download (documented in
+                // PROTOCOL.md as the mapless-entry crash, reproduced by the spectator
+                // harness scenario). The start fires the moment the last MAP_ACK lands;
+                // the watchdog stops one wedged client from holding the lobby hostage --
+                // a 20-second-late start beats a lobby stuck forever, and the client that
+                // never acked crashes alone instead of blocking five people. Closure over
+                // the live game object on purpose -- spawn ARGUMENTS are deep-copied
+                // snapshots (the auto-shutdown bug), closures are not.
+                if (is_host) {
+                    if (cm.all_map_acked()) { g.start_game(); }
+                    else if (!g.pending_start) {
+                        print("GAME_START deferred -- a client has not confirmed the map");
+                        g.pending_start = true;
+                        spawn(async fn() {
+                            sleep(20.0);
+                            if (g.pending_start) {
+                                print("start watchdog: 20s without full map acks -- starting anyway");
+                                g.pending_start = false;
+                                g.start_game();
+                            }
+                        });
+                    }
+                }
 
             } else if (packet.net_id == id.GAME_END) {
                 if (is_host) { g.end_game(connection, packet); }
@@ -362,6 +385,13 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.MAP_DOWNLOAD) {
                 g.map.send_data_to_connection(connection);
+
+            } else if (packet.net_id == id.MAP_ACK) {
+                connection.map_ack = packet.get(0);
+                if (g.pending_start && cm.all_map_acked()) {
+                    g.pending_start = false;
+                    g.start_game();
+                }
 
             } else if (packet.net_id == id.PLAYER_CHAT) {
                 let team = packet.get(0);

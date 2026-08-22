@@ -17,6 +17,21 @@ export fn ConnectionManager(server, game) {
         // The password lockout's shared counter -- see LOBBY_PASSWORD in packet_handler.
         pass_fails: 0,
         pass_fail_at: 0,
+
+        // Has every connected client confirmed it loaded the CURRENT map? Acks store the
+        // hash, so a map change staleness them automatically -- no reset bookkeeping. False
+        // while no map exists: there is nothing to have confirmed.
+        all_map_acked: fn() {
+            let g = self.game;
+            if (g.map == null || g.map.hash == null) { return false; }
+            let i = 0;
+            while (i < self.connections.length) {
+                let c = self.connections[i];
+                if (c != null && c?.map_ack != g.map.hash) { return false; }
+                i = i + 1;
+            }
+            return true;
+        },
         add_connection: fn(connection) {
             let g = self.game;
 

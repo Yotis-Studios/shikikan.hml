@@ -94,6 +94,10 @@ export let PLAYER_ZOMBIE_TARGET = 145;
 // A rescue: the current player picks the downed teammate (slot index) back up. Pure relay,
 // gated like every other in-turn action.
 export let PLAYER_RESCUE = 146;
+// This client HAS the current map (payload: the hash it loaded). GAME_START is deferred
+// until every connection has acked the current hash -- the server end of the "entered the
+// match without a map" crash, the only end a modified client cannot bypass.
+export let MAP_ACK = 147;
 
 export let COIN_SPAWN = 150;
 export let COIN_GET = 151;

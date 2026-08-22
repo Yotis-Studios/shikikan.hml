@@ -114,6 +114,8 @@ export fn Map(compressed_data, game) {
     // four-base one seated four. 1v1 stays exempt: it fixes the roster itself.
     let num_bases = map.get_num_bases();
     game.num_bases = num_bases;
+    // A start pressed for the PREVIOUS map must not fire when this one's acks complete.
+    game.pending_start = false;
     if (!game.onevone) {
         let want = num_bases;
         if (game.host_set_players) { want = game.num_players; }
