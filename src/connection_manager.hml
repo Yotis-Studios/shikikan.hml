@@ -235,6 +235,47 @@ export fn ConnectionManager(server, game) {
                 }
             }
 
+            // EVERY SEATED PLAYER'S LOOK, because nothing else on this path carries it.
+            //
+            // PLAYER_LIST is [client_num, sprite, symbol, color, ready, is_cpu, level] -- the
+            // team colour, not the four CUSTOM colours or the hat. Those travel only in
+            // PLAYER_CUSTOM and PLAYER_HAT, which are broadcast on a disconnect, at GAME_START,
+            // and when an owner re-asserts its own. None of those is a join.
+            //
+            // So a client arriving in a lobby saw default colours for everyone already there,
+            // permanently. It re-asserts its OWN look through addSelfToLobby, so the people
+            // already seated see the newcomer correctly and nobody at the table notices -- only
+            // the person who just arrived, looking at everyone else.
+            //
+            // MID-GAME JOINS WERE ALREADY COVERED and that is why this went unnoticed for so
+            // long: above, a join with game_started broadcasts GAME_SAVE, the host uploads the
+            // whole match, every client reloads it, and deserializeAndLoadGameData restores
+            // eyeColor, hairColor, uniformColor, skinColor and hat. The lobby has no snapshot,
+            // so the lobby had no colours.
+            //
+            // SENT, NOT BROADCAST. broadcast_custom would re-tell the whole table something it
+            // already knows, once per player, on every join. The newcomer is the only one
+            // missing this.
+            let ci = 0;
+            while (ci < g.players.length) {
+                let seated = g.get_player(ci);
+                if (seated != null) {
+                    let custom_packet = Packet(id.PLAYER_CUSTOM);
+                    custom_packet.add(ci);
+                    custom_packet.add(seated.eye_color);
+                    custom_packet.add(seated.hair_color);
+                    custom_packet.add(seated.uniform_color);
+                    custom_packet.add(seated.skin_color);
+                    connection.send(custom_packet);
+
+                    let hat_packet = Packet(id.PLAYER_HAT);
+                    hat_packet.add(ci);
+                    hat_packet.add(seated.hat);
+                    connection.send(hat_packet);
+                }
+                ci = ci + 1;
+            }
+
             print("Connection opened (" + conn_id + ")");
         },
 
