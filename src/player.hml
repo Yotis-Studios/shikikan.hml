@@ -18,6 +18,9 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
         symbol: symbol,
         level: 3,
         ready: false,
+        // Owned the game before free-to-play. Client-asserted and cosmetic (a gold name);
+        // the server relays it without checking, exactly as it relays a name.
+        veteran: false,
         server: server,
         connection: connection,
         uid: null,

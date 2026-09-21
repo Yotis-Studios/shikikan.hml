@@ -102,3 +102,7 @@ export let MAP_ACK = 147;
 export let COIN_SPAWN = 150;
 export let COIN_GET = 151;
 export let COIN_CONFIRM = 152;
+
+// Whether a player owned the game before free-to-play. Relayed like a name rather than
+// added to PLAYER_LIST, which is a flat array read at a fixed stride on the client.
+export let PLAYER_VETERAN = 153;

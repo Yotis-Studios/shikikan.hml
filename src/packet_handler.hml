@@ -100,6 +100,15 @@ export fn PacketHandler(connection_manager) {
                     self.server.broadcast(pl_packet);
                 }
 
+            } else if (packet.net_id == id.PLAYER_VETERAN) {
+                // The sender speaks only for itself -- the index is taken from the connection,
+                // never from the packet, so nobody can gild somebody else's name.
+                let player = g.get_player(i);
+                if (player != null) {
+                    player.veteran = packet.get(0);
+                    g.broadcast_names();
+                }
+
             } else if (packet.net_id == id.PLAYER_NAME) {
                 let name = packet.get(0);
                 let player = g.get_player(i);

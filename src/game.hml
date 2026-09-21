@@ -169,6 +169,12 @@ export fn Game(server) {
                 name_packet.add(i);
                 name_packet.add(player.name);
                 self.server.broadcast(name_packet);
+                // Alongside the name, and for the same reason it is broadcast at all: a
+                // joiner needs everybody's, and a rejoin needs its own back.
+                let vet_packet = Packet(id.PLAYER_VETERAN);
+                vet_packet.add(i);
+                vet_packet.add(player.veteran);
+                self.server.broadcast(vet_packet);
                 player.broadcast_custom();
                 player.broadcast_hat();
             }
