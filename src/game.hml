@@ -203,10 +203,33 @@ export fn Game(server) {
     };
 
     game.destroy_player_connection = fn(i) {
-        let player = self.players[i];
+        // get_player, NOT self.players[i]. Hemlock THROWS on an out-of-range array read
+        // ("Array index N out of bounds"), and this runs from the disconnect handler, where a
+        // throw skips everything below it.
+        let player = self.get_player(i);
         if (player != null) {
             self.reset_player(i);
             if (self.onevone) {
+                // THE LAST CONNECTION DISCONNECTING USED TO THROW RIGHT HERE.
+                //
+                // `players` is a fixed six-slot array grown only by init_new_player, and
+                // spectators go through init_player_connection too -- so a spectator always sits
+                // at the TOP index. In onevone, `i + 1` for that seat is one past the end, and
+                // reset_player read it raw.
+                //
+                // The throw landed between the resets and every broadcast below, so PLAYER_LIST,
+                // broadcast_names (which carries broadcast_custom and broadcast_hat) and
+                // update_player_count never ran -- and back in remove_connection neither did
+                // connection.kick(). Every remaining client kept the departed player's custom
+                // colours and a stale roster count, having been told only that somebody left.
+                //
+                // reset_player is bounds-guarded now, so this is a no-op rather than a throw when
+                // there is no seat there.
+                //
+                // NOT FIXED HERE, and worth knowing: `i + 1` assumes the teammate is adjacent,
+                // which holds for a four-base board and not for six, where lead 0's teammates are
+                // 1 AND 2. Changing which seats a disconnect resets is a lobby behaviour change
+                // rather than a crash fix, so it is left as it was.
                 self.reset_player(i + 1);
             }
             let pl_packet = Packet(id.PLAYER_LIST);
@@ -218,7 +241,10 @@ export fn Game(server) {
     };
 
     game.reset_player = fn(i) {
-        let player = self.players[i];
+        // get_player bounds-checks and returns null; a raw read throws. Its callers pass
+        // arithmetic (i + 1 from destroy_player_connection), so "the index is always valid"
+        // was an assumption about the caller rather than a property of this function.
+        let player = self.get_player(i);
         if (player != null) {
             player.connection = null;
             player.name = "Player " + (i + 1);
