@@ -7,11 +7,36 @@ import { Game } from "./src/game.hml";
 import { ConnectionManager } from "./src/connection_manager.hml";
 import { PacketHandler } from "./src/packet_handler.hml";
 import { randint } from "@stdlib/random";
+import { getenv } from "@stdlib/env";
 import { fuzz_config, fuzz_wrap } from "./src/fuzz.hml";
 
-// Bind to a random available port
-// TODO: use getPort equivalent or bind to port 0
-let port = randint(10000, 60000);
+// A NARROW, KNOWN RANGE -- because nginx has to name it.
+//
+// This used to be randint(10000, 60000), which is fine when players dial the port directly and
+// impossible to put behind a reverse proxy safely. In nginx mode GameRouter hands the client
+// `/game/<port>` and nginx maps that path back to 127.0.0.1:<port>, so the location regex decides
+// which ports the internet may reach. A regex wide enough for 10000-60000 is an open proxy onto
+// every loopback service on the box -- on the production host that is Gitea (3000), MariaDB
+// (3306), PostgreSQL (5432), the wiki (8080) and GameRouter itself (42069), each reachable as
+// /game/<port>. The range below is what makes `^/game/(40[0-9]{3})$` both sufficient and tight.
+//
+// KEEP THE TWO IN STEP. Widening this without widening the nginx regex makes lobbies on the new
+// ports silently unreachable; widening the regex without narrowing what listens there re-opens
+// the proxy.
+//
+// `getenv` returns "" for a variable that is SET BUT EMPTY -- see fuzz.hml, where assuming that
+// could not happen killed every lobby -- so the empty case falls back alongside the null one.
+let PORT_MIN = 40000;
+let PORT_MAX = 40999;
+let env_min = getenv("RW_GAME_PORT_MIN");
+let env_max = getenv("RW_GAME_PORT_MAX");
+if (env_min != null && env_min != "") { PORT_MIN = number(env_min); }
+if (env_max != null && env_max != "") { PORT_MAX = number(env_max); }
+
+// Still a random pick rather than a counter: GameRouter spawns these as independent processes and
+// nothing shared tracks which ports are taken. A thousand ports against the handful of concurrent
+// lobbies this box holds keeps collisions rare.
+let port = randint(PORT_MIN, PORT_MAX);
 
 let server = Server();
 let game = Game(server);
