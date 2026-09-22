@@ -226,11 +226,28 @@ export fn Game(server) {
                 // reset_player is bounds-guarded now, so this is a no-op rather than a throw when
                 // there is no seat there.
                 //
-                // NOT FIXED HERE, and worth knowing: `i + 1` assumes the teammate is adjacent,
-                // which holds for a four-base board and not for six, where lead 0's teammates are
-                // 1 AND 2. Changing which seats a disconnect resets is a lobby behaviour change
-                // rather than a crash fix, so it is left as it was.
-                self.reset_player(i + 1);
+                // THE WHOLE SIDE, not the next seat along.
+                //
+                // `i + 1` assumed the teammate is adjacent, which is true only on a four-base
+                // board. In onevone every base plays and the two sides are 0..half-1 and
+                // half..num_bases-1 -- see turn_rotation and the slot assignment in
+                // add_connection, which seats humans only at 0 and half. On a six-base board
+                // lead 0's teammates are 1 AND 2, so a disconnect freed one of them and left
+                // the other standing as a seat with no connection behind it.
+                //
+                // Derived from half rather than counted, so it holds at any roster size.
+                let half = self.num_bases / 2;
+                let side_lo = 0;
+                let side_hi = half;
+                if (i >= half) {
+                    side_lo = half;
+                    side_hi = self.num_bases;
+                }
+                let t = side_lo;
+                while (t < side_hi) {
+                    if (t != i) { self.reset_player(t); }
+                    t = t + 1;
+                }
             }
             let pl_packet = Packet(id.PLAYER_LIST);
             self.add_players_to_packet(pl_packet, true);
