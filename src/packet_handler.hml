@@ -43,7 +43,23 @@ export fn PacketHandler(connection_manager) {
             let cur_player_idx = g.turn % g.turn_rotation();
             let half = integer(g.num_players / 2);
             let is_onevone = g.onevone;
-            let is_onevone_team = is_onevone && ((i < half && cur_player_idx < half) || (i >= half && cur_player_idx >= half));
+            // `i != null` FIRST, exactly as is_player above does it, and for the same reason.
+            //
+            // `i` is null for a connection that has not been seated yet, and comparing null with
+            // `<` throws "Binary operation requires numeric operands". It is behind
+            // `is_onevone &&`, so short-circuiting hid it everywhere except squads -- where it
+            // killed every MID-MATCH JOIN, reconnects included.
+            //
+            // Those take a different route in: a fresh connection is seated by the connect
+            // handler, but one arriving while a match is running reaches add_connection through
+            // CLIENT_UID, and this preamble runs for that packet with `i` still null. So the
+            // throw landed before the handler body, server.hml's on("error") kicked the
+            // returning player, and a 1v1 commander who dropped could never get back in.
+            //
+            // Found by RW_NET_REJOIN on its first squads run. The same stage passes in FFA,
+            // which is the whole reason it took a dedicated scenario to see.
+            let is_onevone_team = is_onevone && i != null
+                && ((i < half && cur_player_idx < half) || (i >= half && cur_player_idx >= half));
             let is_cur_turn = cur_player_idx == i || is_onevone_team;
             let cur_player = g.get_player(cur_player_idx);
             let cur_player_is_cpu = cur_player.is_cpu();
