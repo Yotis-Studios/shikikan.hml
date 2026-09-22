@@ -677,6 +677,19 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.ERROR_SYNC) {
                 self.server.broadcast(packet);
 
+            } else if (packet.net_id == id.TURN_CHECKSUM) {
+                // RELAYED WITHOUT A TURN CHECK, deliberately. Every client sends one of these at
+                // every turn boundary, including the ones whose turn it is not -- a silent
+                // client is exactly the one whose divergence would go unnoticed -- so
+                // valid_player_packet would drop all but one of them and the comparison would
+                // never happen.
+                //
+                // Nothing here reads it. It is evidence passed between clients, not an
+                // instruction to this server, so there is nothing for it to validate: a client
+                // that lies about its own hash only makes its own peers report a desync that
+                // this protocol already lets it cause outright.
+                connection.broadcast(packet);
+
             } else if (packet.net_id == id.DECK_RESET
                     || packet.net_id == id.DECK_WEIGHT
                     || packet.net_id == id.DECK_COST

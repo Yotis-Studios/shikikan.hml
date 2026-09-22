@@ -106,3 +106,8 @@ export let COIN_CONFIRM = 152;
 // Whether a player owned the game before free-to-play. Relayed like a name rather than
 // added to PLAYER_LIST, which is a flat array read at a fixed stride on the client.
 export let PLAYER_VETERAN = 153;
+
+// One client's hash of the board at a turn boundary, relayed so the others can compare it with
+// their own. A desync has never had a way to report itself; this is it. Relayed unverified and
+// unread by this server -- it is evidence between clients, not an instruction to anybody.
+export let TURN_CHECKSUM = 154;
