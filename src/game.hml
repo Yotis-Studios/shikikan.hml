@@ -120,7 +120,7 @@ export fn Game(server) {
                 }
                 player.sprite = sprite;
                 player.symbol = sprite;
-                let half = self.num_bases / 2;
+                let half = integer(self.num_bases / 2);
                 if (self.onevone && player.client_num != 0 && player.client_num != half) {
                     let other_idx = 0;
                     if (player.client_num >= half) { other_idx = half; }
@@ -236,7 +236,7 @@ export fn Game(server) {
                 // the other standing as a seat with no connection behind it.
                 //
                 // Derived from half rather than counted, so it holds at any roster size.
-                let half = self.num_bases / 2;
+                let half = integer(self.num_bases / 2);
                 let side_lo = 0;
                 let side_hi = half;
                 if (i >= half) {
@@ -369,7 +369,7 @@ export fn Game(server) {
             let is_host_player = (j == self.host);
             self.players[j].ready = is_host_player;
             if (self.onevone) {
-                let half = self.num_bases / 2;
+                let half = integer(self.num_bases / 2);
                 if (j != 0 && j != half) {
                     self.players[j].ready = true;
                 }

@@ -73,7 +73,7 @@ export fn ConnectionManager(server, game) {
             }
 
             // Find lowest available slot
-            let half = g.num_bases / 2;
+            let half = integer(g.num_bases / 2);
             if (conn_id == null) {
                 let i = 0;
                 while (conn_id == null) {
@@ -376,7 +376,30 @@ export fn ConnectionManager(server, game) {
 
         set_one_v_one_players: fn() {
             let g = self.game;
-            let half = g.num_bases / 2;
+
+            // integer(), AND THIS IS THE FUNCTION THAT PROVED WHY.
+            //
+            // `6 / 2` is 3.0 in Hemlock, not 3, and an array index must be an integer --
+            // `a[3.0]` throws "Index must be an integer". `half` is used as a slot number
+            // below (other_slot, and the swap_connections calls that index with it), so the
+            // very first GAME_ONEVONE packet a host ever sent threw right here.
+            //
+            // The throw landed inside handle_packet, so server.hml's `on("error")` caught it,
+            // sent the HOST a PLAYER_KICK reading "An error occurred sending data." and closed
+            // its connection. The host then left the lobby before it had uploaded its map, and
+            // the failure presented to the harness as "the host never announced a ready lobby"
+            // -- a timeout three steps downstream of the packet that actually killed it.
+            //
+            // So 1v1 Squads has never worked online, at any roster size, since the option
+            // existed. Nothing caught it because no test had ever sent the packet: the only
+            // squads assertion anywhere is an OFFLINE flow, which never reaches a server.
+            //
+            // Comparisons are safe -- Hemlock compares 3 and 3.0 as equal, which is why the
+            // five other `num_bases / 2` sites were accidentally fine and one of them,
+            // destroy_player_connection, walks a side with it. They are all integer() now
+            // anyway: five sites that happen not to index today is not a property worth
+            // relying on, and the next person to add an index to one brings this back.
+            let half = integer(g.num_bases / 2);
 
             // Move host to slot 0 or half
             let host = g.host;
