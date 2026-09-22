@@ -283,6 +283,30 @@ export fn PacketHandler(connection_manager) {
                 }
 
             } else if (packet.net_id == id.PLAYER_CARD) {
+                let card_op = packet.get(0);
+
+                // A DEALT CARD (op 3) IS BOOKKEEPING AT THE TURN BOUNDARY, NOT A TURN ACTION,
+                // so valid_player_packet is the wrong gate for it.
+                //
+                // The draw is decided when PLAYER_LUCK lands, and end_turn broadcasts that luck
+                // and THEN advances cur_player -- so by the time the client answers, this server
+                // already believes somebody else is up. The packet would be refused as
+                // out-of-turn every single time, silently, and the peers would never be told
+                // which card was dealt.
+                //
+                // Gated on OWNERSHIP instead, the same rule PLAYER_CUSTOM and PLAYER_HAT use:
+                // your own seat, or any CPU if you are the host. That is exactly the set
+                // clientDrivesPlayer picks from on the other end, so a client can only ever
+                // deal to a seat it drives.
+                if (card_op == 3) {
+                    let draw_slot = packet.get(1);
+                    let drawee = g.get_player(draw_slot);
+                    if (drawee != null && (draw_slot == i || (is_host && drawee.is_cpu()))) {
+                        connection.broadcast(packet);
+                    }
+                    return;
+                }
+
                 if (!valid_player_packet) { return; }
                 let operation = packet.get(0);
                 let card_idx = packet.get(2);
