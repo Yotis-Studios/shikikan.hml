@@ -157,12 +157,64 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.PLAYER_TIER) {
                 if (!valid_player_packet) { return; }
                 let tier_choice = packet.get(0);
+
+                // WHO THE TIER IS FOR, WHICH IS NOT THE SENDER.
+                //
+                // This rebuilt the packet as [i, tier_choice] -- the sender's connection id and
+                // nothing else -- and applied the tier to g.get_player(i). That is right for a
+                // client tiering its own raifu and wrong for EVERY CPU, because the host sends
+                // on their behalf: valid_player_packet explicitly admits `is_host &&
+                // cur_player_is_cpu` two lines up, and every packet admitted by that clause
+                // names the wrong seat.
+                //
+                // Measured in a four-client run. The host tiered the CPU at slot 3; every peer
+                // read the relayed id and tiered slot 0. Slot 3 sat at tier 0 on both joiners
+                // for forty turns while the host walked it to tier 4, won, and exited -- and the
+                // joiners, who had never seen the match end, went on playing. The server's own
+                // `the_player.tier` was wrong in exactly the same way, so its authoritative
+                // count agreed with nobody.
+                //
+                // The client now says which seat it acted for, and the same ownership rule
+                // PLAYER_CUSTOM and PLAYER_HAT already use decides whether to believe it: your
+                // own seat, or any CPU if you are the host. Anything else falls back to
+                // cur_player_idx, which is the server's own idea of whose turn it is -- derived
+                // from the turn counter rather than from anything a client said.
+                let acting = packet.get(1);
+                let acting_player = null;
+                let allowed = false;
+                if (acting != null) {
+                    acting_player = g.get_player(acting);
+                    if (acting_player != null) {
+                        if (acting == i) { allowed = true; }
+                        if (is_host && acting_player.is_cpu()) { allowed = true; }
+                    }
+                }
+                if (!allowed) {
+                    acting = cur_player_idx;
+                    acting_player = g.get_player(acting);
+                }
+
                 let tier_packet = Packet(id.PLAYER_TIER);
                 tier_packet.add(i);
                 tier_packet.add(tier_choice);
+                tier_packet.add(acting);
+                // THE SENDER'S OWN VIEW OF THE DECISION, forwarded untouched: the tier it was
+                // on, which track it is racing, and the count it had. The peers check the shared
+                // rule against those rather than re-deciding against their own state a moment
+                // later, which is what made the old report cry wolf on every tier-up that
+                // crossed a turn boundary. Absent on a tier CHOICE, which carries no claim --
+                // and get() answers null past the end, so a short packet forwards as a short
+                // packet rather than throwing.
+                let claim_tier = packet.get(2);
+                if (claim_tier != null) {
+                    tier_packet.add(claim_tier);
+                    tier_packet.add(packet.get(3));
+                    tier_packet.add(packet.get(4));
+                }
                 connection.broadcast(tier_packet);
-                let the_player = g.get_player(i);
-                if (tier_choice == -1) { the_player.tier = the_player.tier + 1; }
+                if (acting_player != null && tier_choice == -1) {
+                    acting_player.tier = acting_player.tier + 1;
+                }
 
             } else if (packet.net_id == id.GAME_START) {
                 // DEFERRED, NOT REFUSED, when somebody lacks the map: the crash this gate
