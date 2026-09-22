@@ -73,12 +73,12 @@ export fn ConnectionManager(server, game) {
             }
 
             // Find lowest available slot
-            let half = integer(g.num_bases / 2);
+            let half = integer(g.num_players / 2);
             if (conn_id == null) {
                 let i = 0;
                 while (conn_id == null) {
                     if (g.onevone) {
-                        if (i != 0 && i != half && i < g.num_bases) {
+                        if (i != 0 && i != half && i < g.num_players) {
                             i = i + 1;
                             continue;
                         }
@@ -221,7 +221,7 @@ export fn ConnectionManager(server, game) {
                 let cur_player = g.cur_player;
                 let is_current = cur_player == conn_id;
                 let is_onevone_team = false;
-                if (g.onevone && conn_id < g.num_bases) {
+                if (g.onevone && conn_id < g.num_players) {
                     if (cur_player < half && conn_id < half) {
                         is_onevone_team = true;
                     } else if (cur_player >= half && conn_id >= half) {
@@ -399,7 +399,7 @@ export fn ConnectionManager(server, game) {
             // destroy_player_connection, walks a side with it. They are all integer() now
             // anyway: five sites that happen not to index today is not a property worth
             // relying on, and the next person to add an index to one brings this back.
-            let half = integer(g.num_bases / 2);
+            let half = integer(g.num_players / 2);
 
             // Move host to slot 0 or half
             let host = g.host;
@@ -410,7 +410,7 @@ export fn ConnectionManager(server, game) {
             // Move other player to opposite side
             let lowest_slot = null;
             let i = 0;
-            while (i < g.num_bases) {
+            while (i < g.num_players) {
                 if (i != host_slot) {
                     lowest_slot = i;
                     break;
@@ -423,7 +423,7 @@ export fn ConnectionManager(server, game) {
 
             // Move remaining connections to spectators or kick
             i = 0;
-            while (i < g.num_bases) {
+            while (i < g.num_players) {
                 if (i != host_slot && i != other_slot) {
                     let player = g.players[i];
                     if (g.spectators) {

@@ -41,7 +41,7 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
         is_cpu: fn() {
             let conn_is_null = self.connection == null;
             if (self.game.onevone) {
-                let half = integer(self.game.num_bases / 2);
+                let half = integer(self.game.num_players / 2);
                 if (self.client_num != 0 && self.client_num != half) {
                     return self.game.get_player(self.client_num - 1).is_cpu();
                 }

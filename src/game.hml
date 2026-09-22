@@ -120,7 +120,7 @@ export fn Game(server) {
                 }
                 player.sprite = sprite;
                 player.symbol = sprite;
-                let half = integer(self.num_bases / 2);
+                let half = integer(self.num_players / 2);
                 if (self.onevone && player.client_num != 0 && player.client_num != half) {
                     let other_idx = 0;
                     if (player.client_num >= half) { other_idx = half; }
@@ -236,12 +236,15 @@ export fn Game(server) {
                 // the other standing as a seat with no connection behind it.
                 //
                 // Derived from half rather than counted, so it holds at any roster size.
-                let half = integer(self.num_bases / 2);
+                let half = integer(self.num_players / 2);
                 let side_lo = 0;
                 let side_hi = half;
                 if (i >= half) {
                     side_lo = half;
-                    side_hi = self.num_bases;
+                    // num_players, not num_bases: the upper side ends at the end of the
+                    // ROSTER. On a six-base map with a roster of four this walked two seats
+                    // that are not in the match.
+                    side_hi = self.num_players;
                 }
                 let t = side_lo;
                 while (t < side_hi) {
@@ -369,7 +372,7 @@ export fn Game(server) {
             let is_host_player = (j == self.host);
             self.players[j].ready = is_host_player;
             if (self.onevone) {
-                let half = integer(self.num_bases / 2);
+                let half = integer(self.num_players / 2);
                 if (j != 0 && j != half) {
                     self.players[j].ready = true;
                 }
@@ -482,17 +485,29 @@ export fn Game(server) {
         return want;
     };
 
+    // ONE MEANING FOR num_players: THE ROSTER. It used to have two.
+    //
+    // This set num_players to 2 in 1v1 -- COMMANDERS, not raifus -- while every client reads
+    // GAME_NUM_PLAYERS as the roster and bakes that many seats (initMatchPlayers loops
+    // `i < global.numPlayers`). So a 1v1 lobby ended with three different boards: the host on
+    // its own untouched count, the server on 2, and a joiner that applied the 2 literally and
+    // built a two-raifu match. Measured on Colosseum: host 4 seats, server 6 bases and 2
+    // players, joiner 2 seats, and every `half` in between disagreeing about where the second
+    // commander sits.
+    //
+    // The two meanings had already been noticed once and patched around rather than removed --
+    // turn_rotation carried an `if (self.onevone) return num_bases` whose comment says
+    // outright that num_players "cannot be the rotation length there". That workaround goes
+    // with this: once num_players is the roster, it is the rotation length like everywhere
+    // else.
+    //
+    // THE CLIENT IS THE SPEC HERE. handleTeam1v1Button calls setOneVOne(true) and
+    // setTeams(2) and does NOT touch global.numPlayers -- picking 1v1 squads changes who
+    // COMMANDS the seats, never how many there are. This now does exactly the same nothing,
+    // and a map load broadcasts the roster for a 1v1 lobby the same as for any other (see
+    // map.hml, which used to skip it).
     game.set_one_v_one = fn(enable) {
         self.onevone = enable;
-        if (self.onevone) {
-            self.set_num_players(2);
-        } else {
-            if (self.map != null) {
-                self.set_num_players(self.map.get_num_bases());
-            } else {
-                self.set_num_players(4);
-            }
-        }
     };
 
     game.set_tier_options = fn(option) { self.tier_options = option; };
@@ -503,12 +518,15 @@ export fn Game(server) {
     // resized to a duel rotates over two players, exactly as every client does (they bake
     // numPlayers seats) -- rotating over num_bases put the server two seats out of step
     // with the whole lobby the first time a reduced roster played, and every packet from
-    // the real current player was then dropped as out-of-turn. 1v1 is the exception on
-    // both ends: every base plays (the leads' CPU teammates take turns), and
-    // set_one_v_one sets num_players to 2 for its own reasons, so it cannot be the
-    // rotation length there.
+    // the real current player was then dropped as out-of-turn.
+    //
+    // 1v1 IS NOT AN EXCEPTION ANY MORE. It used to be, because set_one_v_one redefined
+    // num_players as a commander count; every base plays in 1v1 (the leads' CPU teammates
+    // take their own turns), so the rotation had to be read off num_bases instead. Now that
+    // num_players is the roster in every mode, it is the rotation length in every mode -- and
+    // a 1v1 lobby on a six-base map with a roster of four rotates over four, which is what
+    // the clients bake and what num_bases could never have said.
     game.turn_rotation = fn() {
-        if (self.onevone) { return self.num_bases; }
         let n = self.num_players;
         if (n < 2) { n = 2; }
         if (n > self.num_bases) { n = self.num_bases; }

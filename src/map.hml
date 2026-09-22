@@ -254,14 +254,23 @@ export fn Map(compressed_data, game) {
     game.num_bases = num_bases;
     // A start pressed for the PREVIOUS map must not fire when this one's acks complete.
     game.pending_start = false;
-    if (!game.onevone) {
-        let want = num_bases;
-        if (game.host_set_players) { want = game.num_players; }
-        let agreed = game.set_num_players(want);
-        let np_packet = Packet(id.GAME_NUM_PLAYERS);
-        np_packet.add(agreed);
-        game.server.broadcast(np_packet);
-    }
+    // NO 1v1 EXEMPTION ANY MORE. It used to read `if (!game.onevone)`, because
+    // set_one_v_one had pinned num_players to 2 and this would have overwritten it -- "1v1
+    // stays exempt: it fixes the roster itself", as the note above said.
+    //
+    // That exemption is what left a 1v1 lobby with no agreed roster at all. A host who picks
+    // squads BEFORE uploading its map -- which is the order the setup screen offers, teams sit
+    // above the confirm button -- skipped this broadcast entirely, so the joiner was never told
+    // how many seats the match has and every client guessed differently.
+    //
+    // num_players is the roster in every mode now, so a 1v1 lobby agrees its roster exactly
+    // the way an FFA lobby does, and a host who chose a count keeps it in both.
+    let want = num_bases;
+    if (game.host_set_players) { want = game.num_players; }
+    let agreed = game.set_num_players(want);
+    let np_packet = Packet(id.GAME_NUM_PLAYERS);
+    np_packet.add(agreed);
+    game.server.broadcast(np_packet);
 
     // GameRouter lists lobbies by these.
     send_event("mapHash", map.hash);
