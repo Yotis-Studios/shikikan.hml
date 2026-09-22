@@ -407,28 +407,44 @@ export fn ConnectionManager(server, game) {
             if (host >= half) { host_slot = half; }
             if (host_slot != host) { self.swap_connections(host, host_slot, true); }
 
-            // Move other player to opposite side
-            let lowest_slot = null;
+            // THE OTHER COMMANDER -- IF THERE IS ONE.
+            //
+            // This took the first slot that is not the host's, OCCUPIED OR NOT. A host toggling
+            // 1v1 in an empty lobby is the NORMAL order, not an edge case: the teams row sits
+            // above the confirm button on the setup screen, so squads is chosen before anybody
+            // else can possibly have joined. It therefore swapped two empty seats and broadcast
+            // a PLAYER_SWAP for them, churning every client's staged roster to no purpose.
+            //
+            // An empty lobby needs no reseat at all: add_connection already offers only slot 0
+            // and slot half while onevone is set, so whoever arrives next lands on a commander
+            // seat without being moved.
+            let other_conn = null;
             let i = 0;
             while (i < g.num_players) {
-                if (i != host_slot) {
-                    lowest_slot = i;
+                if (i != host_slot && self.connections[i] != null) {
+                    other_conn = i;
                     break;
                 }
                 i = i + 1;
             }
             let other_slot = half;
             if (host_slot != 0) { other_slot = 0; }
-            if (lowest_slot != other_slot) { self.swap_connections(lowest_slot, other_slot, true); }
+            if (other_conn != null && other_conn != other_slot) {
+                self.swap_connections(other_conn, other_slot, true);
+            }
 
-            // Move remaining connections to spectators or kick
+            // Move remaining CONNECTIONS to spectators or kick.
+            //
+            // Occupied seats only. reset_player on an empty one is harmless but
+            // set_player_as_spectator is not -- it allocates a spectator slot and renumbers,
+            // and it was being run for every empty seat on the board.
             i = 0;
             while (i < g.num_players) {
-                if (i != host_slot && i != other_slot) {
-                    let player = g.players[i];
+                if (i != host_slot && i != other_slot && self.connections[i] != null) {
+                    let player = g.get_player(i);
                     if (g.spectators) {
                         self.set_player_as_spectator(i);
-                    } else {
+                    } else if (player != null) {
                         player.kick("Game is full.");
                     }
                     g.reset_player(i);
