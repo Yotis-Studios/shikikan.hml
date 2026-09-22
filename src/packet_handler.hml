@@ -317,7 +317,22 @@ export fn PacketHandler(connection_manager) {
                 if (card_op == 3) {
                     let draw_slot = packet.get(1);
                     let drawee = g.get_player(draw_slot);
-                    if (drawee != null && (draw_slot == i || (is_host && drawee.is_cpu()))) {
+                    // SQUADS NEEDS A SIDE RULE, because is_cpu() is not one there.
+                    //
+                    // In 1v1 a teammate INHERITS its commander's cpu-ness (player.hml walks
+                    // back to the lead seat), so a live commander's teammates all report
+                    // is_cpu() == false. They are still seats that commander drives, and the
+                    // host-and-cpu clause therefore refused every card dealt to one: the
+                    // packet was dropped and the other side never learned the card.
+                    //
+                    // Measured at turn 8 of a squads match -- the host holding card 9 for slot
+                    // 2 and the peer holding nothing, on a board that agreed about everything
+                    // else. Same side is exactly what clientDrivesPlayer allows on the client,
+                    // so the two ends now draw the same line.
+                    let same_side = is_onevone && i != null
+                        && ((draw_slot < half && i < half) || (draw_slot >= half && i >= half));
+                    if (drawee != null
+                        && (draw_slot == i || same_side || (is_host && drawee.is_cpu()))) {
                         connection.broadcast(packet);
                     }
                     return;
