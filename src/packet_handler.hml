@@ -210,6 +210,13 @@ export fn PacketHandler(connection_manager) {
                     tier_packet.add(claim_tier);
                     tier_packet.add(packet.get(3));
                     tier_packet.add(packet.get(4));
+                    // WHY it was allowed -- earned, bribed or forced. A bribed tier-up is
+                    // legal without the stars and a forced one has no condition at all, so a
+                    // peer that does not know which rule applied reports both as cheating.
+                    // Optional: a sender that omits it forwards a five-field claim and the
+                    // peer falls back to judging it as earned.
+                    let claim_why = packet.get(5);
+                    if (claim_why != null) { tier_packet.add(claim_why); }
                 }
                 connection.broadcast(tier_packet);
                 if (acting_player != null && tier_choice == -1) {
