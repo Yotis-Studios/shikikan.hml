@@ -321,7 +321,23 @@ export fn Game(server) {
         // mismatch was latent for a reduced roster (GAME_NUM_PLAYERS) on a bigger map.
         // One rulebook: if the client's rule changes, change THIS line to match, not to
         // something equivalent-looking.
-        let is_teams = self.num_teams == 2;
+        // The client's rule gained a second clause on 26 Sep (RaifuWars 62625e5c1, "a duel
+        // opens on player 1 again"): a two-team split starts on player 1 only when there are
+        // MORE THAN TWO seats. A plain duel is num_teams 2 and num_players 2, and it had been
+        // opening on player 2 for four years.
+        //
+        // That change was made on the client alone, and this line is the other half of the
+        // rulebook the comment above insists on. The result is the exact failure that comment
+        // describes: in any two-seat match the server started on player 1 while every client
+        // started on player 0, so valid_player_packet rejected the host's very first end-turn
+        // -- no broadcast, no end_turn, no error, and every client sat on turn 0 until one
+        // timed out. Measured: `ENDTURN rx i=0 cur=1 conns=10 live=3` six seconds after
+        // GAME_START, then ninety-three seconds of nothing.
+        //
+        // It hid because it needs a TWO-SEAT online match, and the only stages that make one
+        // are the RW_NET_RESIZE scenarios -- net_resize and net_spectate -- neither of which
+        // had run since the client change.
+        let is_teams = self.num_teams == 2 && self.num_players > 2;
         let turn_offset = 0;
         if (is_teams) { turn_offset = 1; }
         self.turn = turn_offset;
