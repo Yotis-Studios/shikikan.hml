@@ -40,6 +40,10 @@ let port = randint(PORT_MIN, PORT_MAX);
 
 let server = Server();
 let game = Game(server);
+// SHIKIKAN_REQUIRE_MAP=0: a session for a game without maps (the Ganbatte engine's). Default
+// on; RaifuWars never sets it. Same empty-string caveat as the port range above.
+let env_map = getenv("SHIKIKAN_REQUIRE_MAP");
+if (env_map != null && env_map == "0") { game.requires_map = false; }
 let cm = ConnectionManager(server, game);
 let handler = PacketHandler(cm);
 

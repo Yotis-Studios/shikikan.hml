@@ -27,6 +27,9 @@ export fn Game(server) {
         turn: 0,
         cur_player: 0,
         map: null,
+        // SHIKIKAN_REQUIRE_MAP=0 turns this off for games that have no map: no joiner gate, no
+        // map hash to joiners, no wait for acks before start, no coins. RaifuWars keeps it on.
+        requires_map: true,
         map_data: null,
         map_bytes: 0,
         game_data: null,
@@ -343,7 +346,7 @@ export fn Game(server) {
         self.turn = turn_offset;
         self.cur_player = turn_offset;
         self.last_coin = self.turn;
-        self.map.coins = [];
+        if (self.map != null) { self.map.coins = []; }
 
         self.reset_seed();
         let seed_packet = Packet(id.GAME_SEED);
@@ -559,7 +562,7 @@ export fn Game(server) {
         self.cur_player = self.turn % self.turn_rotation();
 
         // Coin spawn logic
-        if (self.turn >= self.last_coin + 10 && self.map.coins.length < 3) {
+        if (self.map != null && self.turn >= self.last_coin + 10 && self.map.coins.length < 3) {
             let rand = randf(0.0, 1.0);
             let coin_chance = 0.25;
             if (rand <= coin_chance) {

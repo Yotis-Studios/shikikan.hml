@@ -23,6 +23,7 @@ export fn ConnectionManager(server, game) {
         // while no map exists: there is nothing to have confirmed.
         all_map_acked: fn() {
             let g = self.game;
+            if (!g.requires_map) { return true; }
             if (g.map == null || g.map.hash == null) { return false; }
             let i = 0;
             while (i < self.connections.length) {
@@ -44,7 +45,7 @@ export fn ConnectionManager(server, game) {
             let g = self.game;
 
             // Reject if game isn't ready (host connected but no map)
-            if (self.connections[g.host] != null && (g.map == null || g.map.hash == null)) {
+            if (g.requires_map && self.connections[g.host] != null && (g.map == null || g.map.hash == null)) {
                 self.session.kick(connection, "Game isn't ready.");
                 return;
             }
@@ -204,9 +205,11 @@ export fn ConnectionManager(server, game) {
 
             // Send map hash and game speed if not host
             if (conn_id != g.host) {
-                let map_packet = Packet(id.MAP_HASH);
-                map_packet.add(g.map.hash);
-                connection.send(map_packet);
+                if (g.requires_map && g.map != null) {
+                    let map_packet = Packet(id.MAP_HASH);
+                    map_packet.add(g.map.hash);
+                    connection.send(map_packet);
+                }
 
                 let speed_packet = Packet(id.GAME_SET_SPEED);
                 speed_packet.add(g.game_speed);

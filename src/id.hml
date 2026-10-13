@@ -111,3 +111,7 @@ export let PLAYER_VETERAN = 153;
 // their own. A desync has never had a way to report itself; this is it. Relayed unverified and
 // unread by this server -- it is evidence between clients, not an instruction to anybody.
 export let TURN_CHECKSUM = 154;
+
+// Relayed verbatim to every other client, never read by the server: the Ganbatte engine's
+// session message. A game with no turns has nothing for valid_player_packet to gate on.
+export let GBE_RELAY = 170;

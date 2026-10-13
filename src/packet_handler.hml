@@ -677,6 +677,9 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.ERROR_SYNC) {
                 self.server.broadcast(packet);
 
+            } else if (packet.net_id == id.GBE_RELAY) {
+                // The engine's session message: relayed to everyone else, never read here.
+                connection.broadcast(packet);
             } else if (packet.net_id == id.TURN_CHECKSUM) {
                 // RELAYED WITHOUT A TURN CHECK, deliberately. Every client sends one of these at
                 // every turn boundary, including the ones whose turn it is not -- a silent
