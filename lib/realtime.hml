@@ -1,0 +1,189 @@
+// realtime.hml -- a server-stepped match on top of the session
+//
+// The session (seat, ready, start, relay) is unchanged; this runs from the session's start to its
+// end. The game supplies the rules as hooks and this owns everything else: the clock, each seat's
+// latest intent, snapshots, and the end. Design: Ganbatte engine docs/ganbatte/REALTIME.md.
+//
+// Hooks (opts.realtime), all called on the server's event loop:
+//   new_match(seed, seats)        -> the match state. seats: [{ slot, name, human }], one per base
+//   intent(match, slot, values)   the latest intent for a seat; the next step uses it
+//   step(match)                   one tick
+//   snapshot(match, slot)         -> an array of gn values for that seat (usually one buffer)
+//   over(match)                   -> whether the match has ended, checked after each tick
+//   fingerprint(match)            -> a string every client is checked against
+//   sent(match)                   optional: after each round of snapshots (clear events here)
+//   leave(match, slot)            optional: a seat's connection went away mid-match
+//
+// The clock is gn's Server.every(), so a tick runs on the same thread as packet handlers and
+// nothing here is locked. If the loop falls behind it catches up at most max_catchup ticks a
+// period and drops the rest: the match runs slow rather than in bursts.
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "../src/id.hml";
+
+// Is u16 sequence a newer than b? Sequences wrap at 65536; b of -1 means none yet.
+export fn seq_newer(a, b) {
+    if (b < 0) { return true; }
+    let d = (a - b + 65536) % 65536;
+    return d != 0 && d < 32768;
+}
+
+export fn Realtime(server, game, cm, hooks, opts) {
+    let tick_hz = 30;
+    let send_hz = 20;
+    let max_catchup = 5;
+    if (opts != null) {
+        if (opts?.tick_hz != null) { tick_hz = opts.tick_hz; }
+        if (opts?.send_hz != null) { send_hz = opts.send_hz; }
+        if (opts?.max_catchup != null) { max_catchup = opts.max_catchup; }
+    }
+
+    let rt = {
+        hooks: hooks,
+        tick_hz: tick_hz,
+        send_hz: send_hz,
+        max_catchup: max_catchup,
+        state: null,
+        running: false,
+        tick: 0,
+        timer: null,
+        seats: 0,
+        acked: [],        // per slot: the last intent sequence applied, -1 for none
+        send_acc: 0,      // send_hz accumulated per tick; a round goes out each time it passes tick_hz
+        dropped: 0,       // ticks not stepped because the loop fell too far behind
+        fingerprint: "",
+
+        start: fn() {
+            if (self.running) { return; }
+            let seats = [];
+            let i = 0;
+            while (i < game.num_bases) {
+                let p = game.get_player(i);
+                let name = "";
+                let human = false;
+                if (p != null) {
+                    name = p.name;
+                    human = p.connection != null;
+                }
+                seats.push({ slot: i, name: name, human: human });
+                i = i + 1;
+            }
+            self.seats = seats.length;
+            self.acked = [];
+            i = 0;
+            while (i < self.seats) {
+                self.acked.push(-1);
+                i = i + 1;
+            }
+            self.state = self.hooks.new_match(game.seed, seats);
+            self.tick = 0;
+            self.send_acc = 0;
+            self.dropped = 0;
+            self.fingerprint = "";
+            self.running = true;
+
+            i = 0;
+            while (i < cm.connections.length) {
+                let c = cm.connections[i];
+                if (c != null) {
+                    let p = Packet(id.GBE_RT_START);
+                    p.add(game.seed);
+                    p.add(self.tick_hz);
+                    p.add(self.send_hz);
+                    p.add(self.tick);
+                    p.add(i);
+                    p.add(self.seats);
+                    c.send(p);
+                }
+                i = i + 1;
+            }
+
+            let me = self;
+            self.timer = server.every(1000 / self.tick_hz, fn(periods, srv) {
+                me.on_timer(periods);
+            });
+            print("realtime: match started, " + self.seats + " seats, " + self.tick_hz + " Hz ticks, " + self.send_hz + " Hz snapshots");
+        },
+
+        intent: fn(slot, packet) {
+            if (!self.running || slot == null || slot >= self.seats) { return; }
+            let seq = packet.get(0);
+            if (seq == null || !seq_newer(seq, self.acked[slot])) { return; }
+            self.acked[slot] = seq;
+            let values = [];
+            let i = 2;
+            while (i < packet.data.length) {
+                values.push(packet.data[i]);
+                i = i + 1;
+            }
+            self.hooks.intent(self.state, slot, values);
+        },
+
+        leave: fn(slot) {
+            if (!self.running || slot >= self.seats) { return; }
+            if (self.hooks?.leave != null) { self.hooks.leave(self.state, slot); }
+        },
+
+        on_timer: fn(periods) {
+            if (!self.running) { return; }
+            let steps = periods;
+            if (steps > self.max_catchup) {
+                self.dropped = self.dropped + steps - self.max_catchup;
+                steps = self.max_catchup;
+            }
+            let k = 0;
+            while (k < steps && self.running) {
+                self.hooks.step(self.state);
+                self.tick = self.tick + 1;
+                if (self.hooks.over(self.state)) {
+                    self.finish();
+                    return;
+                }
+                self.send_acc = self.send_acc + self.send_hz;
+                if (self.send_acc >= self.tick_hz) {
+                    self.send_acc = self.send_acc - self.tick_hz;
+                    self.send_round(0);
+                }
+                k = k + 1;
+            }
+        },
+
+        send_round: fn(over) {
+            let i = 0;
+            while (i < cm.connections.length) {
+                let c = cm.connections[i];
+                if (c != null) {
+                    let ack = -1;
+                    if (i < self.seats) { ack = self.acked[i]; }
+                    let p = Packet(id.GBE_RT_SNAPSHOT);
+                    p.add(self.tick);
+                    p.add(ack);
+                    p.add(over);
+                    p.add(self.fingerprint);
+                    p.add(self.hooks.snapshot(self.state, i));
+                    c.send(p);
+                }
+                i = i + 1;
+            }
+            if (self.hooks?.sent != null) { self.hooks.sent(self.state); }
+        },
+
+        // The match decided it is over: a last snapshot to everyone, carrying the fingerprint.
+        // The session stays started until the host ends it, as for any other game.
+        finish: fn() {
+            self.fingerprint = self.hooks.fingerprint(self.state);
+            self.send_round(1);
+            self.stop();
+            print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped), fingerprint " + self.fingerprint);
+        },
+
+        stop: fn() {
+            if (self.timer != null) {
+                server.cancel(self.timer);
+                self.timer = null;
+            }
+            self.running = false;
+        },
+    };
+    return rt;
+}

@@ -59,6 +59,10 @@ export fn Game(server) {
         deck: Deck(),
         spectators: true,
         last_coin: 0,
+        // Called at the end of start_game and of end_game, when set. start_server points them
+        // at lib/realtime.hml for a game that has a real-time match; null for RaifuWars.
+        on_started: null,
+        on_ended: null,
     };
 
     game.reset_seed = fn() {
@@ -285,7 +289,17 @@ export fn Game(server) {
         let i = 0;
         while (i < self.num_bases) {
             let player = self.players[i];
-            if (player.connection != null && chosen["" + player.color] == null) {
+            // player.color is the seat's PICK, an index into COLORS, once its PLAYER_ADD has
+            // arrived -- and until then it is init_new_player's COLORS[i], a colour VALUE, which
+            // indexed COLORS with a number in the millions and threw, killing the start. That
+            // needs a GAME_START handled before some seat's PLAYER_ADD: never in RaifuWars, where
+            // a person presses start, but every few runs of a scripted session that starts the
+            // moment everyone is seated (test/realtime_test.hml found it). Anything that is not
+            // a valid index is no pick, and gets a free colour below.
+            let pick = player.color;
+            let is_pick = typeof(pick) != "null" && typeof(pick) != "string" && typeof(pick) != "bool"
+                && pick >= 0 && pick < COLORS.length && pick == integer(pick);
+            if (player.connection != null && is_pick && chosen["" + pick] == null) {
                 chosen["" + player.color] = true;
                 player.color = COLORS[player.color];
             } else {
@@ -378,6 +392,7 @@ export fn Game(server) {
             self.players[j].ready = false;
             j = j + 1;
         }
+        if (self.on_started != null) { self.on_started(); }
     };
 
     game.end_game = fn(connection, packet) {
@@ -385,6 +400,7 @@ export fn Game(server) {
         self.game_started = false;
         send_event("isStarted", 0);
         connection.broadcast(packet);
+        if (self.on_ended != null) { self.on_ended(); }
 
         let j = 0;
         while (j < self.num_bases) {

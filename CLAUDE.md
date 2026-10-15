@@ -14,7 +14,11 @@ Two layers:
   - Host authority model: host player has elevated permissions
   - Lobby management: player slots, spectators, password protection
   - Timer patterns via spawn() + sleep() with channels
+  - `realtime.hml`: a server-stepped match on the session (tick, intents, snapshots, end),
+    with the rules supplied by the game as hooks; driven by gn.hml's `Server.every()`
 
+- `src/start_server.hml` — the server as `start_server(opts)`; `server.hml` is
+  `start_server({})`, Raifu Wars. `opts.realtime` adds a match (see README, "A real-time game")
 - `src/` — Raifu Wars game logic (first consumer of lib/)
   - Turn-based gameplay: roll, move, attack, end turn
   - Map loading: zlib decompression, sha1 hashing
@@ -25,7 +29,8 @@ Two layers:
 
 ## Key Design Decisions
 
-- No mutexes needed: gn.hml server callbacks are sequential on one thread
+- No mutexes needed: gn.hml server callbacks are sequential on one thread, and so are
+  `Server.every()` timers (gn.hml 0.4.0+). Use those for anything that changes match state
 - Timers are spawn() + sleep() tasks that send messages back via channels
 - IPC is newline-delimited JSON on stdout (events) and stdin (commands)
 - Wire-compatible with gn.js: existing GameMaker clients work unchanged

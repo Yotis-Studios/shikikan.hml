@@ -1,0 +1,227 @@
+// realtime_test.hml -- a real-time match through the real session, headless
+//
+// Starts start_server() with toy rules on a fixed port, seats three gn clients, has the host
+// start the match, and plays scripted intents against the snapshots. Each seat's intent is a
+// running total, so the final state does not depend on when an intent landed, only on the
+// LAST one landing: the fingerprint every client receives must equal the one computed here
+// from what the clients sent. Sequences start near 65535 so they wrap mid-match.
+//
+//   hemlock test/realtime_test.hml
+//   FUZZ_DELAY_MS=80 FUZZ_PERCENT=30 hemlock test/realtime_test.hml   (late, reordered sends)
+
+import { Client, Packet } from "Yotis-Studios/gn.hml";
+import { start_server } from "../src/start_server.hml";
+import { seq_newer } from "../lib/realtime.hml";
+import * as id from "../src/id.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep, time_ms } from "@stdlib/time";
+
+let PORT = 41950;
+let CLIENTS = 3;
+let OVER_AT = 90;        // ticks: three seconds at 30 Hz
+let INTENTS = 40;        // each client sends this many, one per snapshot, then goes quiet
+let SEQ_START = 65520;   // wraps after 16
+
+// The toy rules. pos[slot] follows the seat's latest intent; the match ends at OVER_AT.
+let toy = {
+    new_match: fn(seed, seats) {
+        let m = { tick: 0, seed: seed, pos: [], latest: [], humans: 0 };
+        let i = 0;
+        while (i < seats.length) {
+            m.pos.push(0);
+            m.latest.push(0);
+            if (seats[i].human) { m.humans = m.humans + 1; }
+            i = i + 1;
+        }
+        return m;
+    },
+    intent: fn(m, slot, values) {
+        m.latest[slot] = values[0];
+    },
+    step: fn(m) {
+        m.tick = m.tick + 1;
+        let i = 0;
+        while (i < m.pos.length) {
+            m.pos[i] = m.latest[i];
+            i = i + 1;
+        }
+    },
+    snapshot: fn(m, slot) {
+        let mine = 0;
+        if (slot < m.pos.length) { mine = m.pos[slot]; }
+        return [mine, m.humans];
+    },
+    over: fn(m) {
+        return m.tick >= OVER_AT;
+    },
+    fingerprint: fn(m) {
+        return "t" + m.tick + ":" + m.pos.join(",");
+    },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT });
+});
+sleep(0.5);
+
+// One client: seat, (host) start, then an intent per snapshot until the end.
+async fn play(index, ready_ch, go_ch) {
+    let c = Client();
+    c.connect("127.0.0.1", PORT);
+    let slot = null;
+    while (slot == null) {
+        let p = c.recv_packet();
+        if (p == null) { throw "closed before CLIENT_INIT"; }
+        if (p.net_id == id.CLIENT_INIT) { slot = p.get(0); }
+    }
+    // What the engine's gbe_session sends once seated: PLAYER_ADD (sprite, symbol, colour index,
+    // level) and a name. Without the PLAYER_ADD the session's start has no colour index for the
+    // seat and assign_player_colors throws.
+    let add = Packet(id.PLAYER_ADD);
+    add.add([0, 0, slot, 0]);
+    c.send(add);
+    let nm = Packet(id.PLAYER_NAME);
+    nm.add("seat" + slot);
+    c.send(nm);
+    ready_ch.send(slot);
+    if (index == 0) {
+        go_ch.recv();
+        c.send(Packet(id.GAME_START));
+    }
+
+    let r = { slot: slot, started: false, seat_count: 0, snapshots: 0, stale: 0, total: 0,
+              sent: 0, last_seq: -1, last_ack: -1, ack_backwards: 0, fingerprint: "",
+              over_tick: 0, mine: 0, humans: 0, first_ms: 0, last_ms: 0 };
+    let seq = SEQ_START;
+    let last_tick = -1;
+    while (r.fingerprint == "") {
+        let p = c.recv_packet();
+        if (p == null) { throw "seat " + slot + ": closed before the end"; }
+        if (p.net_id == id.GBE_RT_START) {
+            r.started = true;
+            assert(p.get(4) == slot, "START names slot " + p.get(4) + " to seat " + slot);
+            r.seat_count = p.get(5);
+            r.first_ms = time_ms();
+        } else if (p.net_id == id.GBE_RT_SNAPSHOT) {
+            let tick = p.get(0);
+            let ack = p.get(1);
+            if (tick <= last_tick) {
+                r.stale = r.stale + 1;   // a fuzzed send overtaken by a later one
+                continue;
+            }
+            last_tick = tick;
+            r.snapshots = r.snapshots + 1;
+            if (ack >= 0) {
+                if (r.last_ack >= 0 && !seq_newer(ack, r.last_ack) && ack != r.last_ack) {
+                    r.ack_backwards = r.ack_backwards + 1;
+                }
+                r.last_ack = ack;
+            }
+            r.mine = p.get(4);
+            r.humans = p.get(5);
+            if (p.get(2) == 1) {
+                r.over_tick = tick;
+                r.fingerprint = p.get(3);
+                r.last_ms = time_ms();
+            } else if (r.sent < INTENTS) {
+                r.total = r.total + slot + 1;
+                let ip = Packet(id.GBE_RT_INTENT);
+                ip.add(seq);
+                ip.add(tick);
+                ip.add(r.total);
+                c.send(ip);
+                r.last_seq = seq;
+                seq = (seq + 1) % 65536;
+                r.sent = r.sent + 1;
+            }
+        }
+    }
+    // No disconnect: the session kills its process once the last seat leaves, which would
+    // race the report below. exit() at the end closes everything.
+    return r;
+}
+
+let ready_ch = channel(CLIENTS);
+let go_ch = channel(1);
+let tasks = [];
+let i = 0;
+while (i < CLIENTS) {
+    tasks.push(spawn(play, i, ready_ch, go_ch));
+    // seat in order, so client i is slot i and client 0 is the host
+    let s = ready_ch.recv();
+    assert(s == i, "client " + i + " was seated at " + s);
+    i = i + 1;
+}
+go_ch.send("go");
+
+let results = [];
+i = 0;
+while (i < CLIENTS) {
+    results.push(join(tasks[i]));
+    i = i + 1;
+}
+
+// What the fingerprint must be: each seat at its last total, the empty fourth seat at 0.
+let expected_pos = [];
+i = 0;
+while (i < results[0].seat_count) {
+    let v = 0;
+    let j = 0;
+    while (j < results.length) {
+        if (results[j].slot == i) { v = results[j].total; }
+        j = j + 1;
+    }
+    expected_pos.push(v);
+    i = i + 1;
+}
+let expected = "t" + OVER_AT + ":" + expected_pos.join(",");
+
+let failed = 0;
+fn check(ok, what) {
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+
+print("");
+print("realtime, " + CLIENTS + " clients:");
+i = 0;
+while (i < results.length) {
+    let r = results[i];
+    print("    seat " + r.slot + ": " + r.snapshots + " snapshots (" + r.stale + " stale) over "
+        + (r.last_ms - r.first_ms) + " ms, sent " + r.sent + ", last seq " + r.last_seq
+        + ", last ack " + r.last_ack + ", total " + r.total + ", fingerprint " + r.fingerprint);
+    i = i + 1;
+}
+print("    expected fingerprint " + expected);
+
+let all_same = true;
+let all_acked = true;
+let all_mine = true;
+let backwards = 0;
+let rate_ok = true;
+i = 0;
+while (i < results.length) {
+    let r = results[i];
+    if (r.fingerprint != expected) { all_same = false; }
+    if (r.last_ack != r.last_seq) { all_acked = false; }
+    if (r.mine != r.total) { all_mine = false; }
+    backwards = backwards + r.ack_backwards;
+    // 90 ticks at 20 of 30 sent: 60 rounds, the last carrying the end
+    if (r.snapshots + r.stale < 58 || r.snapshots + r.stale > 61) { rate_ok = false; }
+    if (r.humans != CLIENTS) { rate_ok = false; }
+    i = i + 1;
+}
+check(results[0].seat_count == 4, "START reports the four bases as seats");
+check(all_same, "every client got the fingerprint computed from what was sent");
+check(all_acked, "every client's last intent was acknowledged");
+check(all_mine, "each seat's snapshot carries its own state");
+check(backwards == 0, "acknowledgements never went backwards across the wrap");
+check(rate_ok, "about 60 snapshots each (20 Hz for 3 s), with 3 humans seen");
+let span = results[0].last_ms - results[0].first_ms;
+check(span >= 2900 && span <= 3300, "90 ticks took " + span + " ms (ideal 3000)");
+
+print("");
+print("Realtime Tests: " + (7 - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "realtime test failed"; }
+exit(0);

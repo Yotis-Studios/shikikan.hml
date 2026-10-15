@@ -29,6 +29,7 @@ shikikan.hml/
 │   ├── index.hml           # Public exports
 │   ├── lobby.hml           # IPC, lifecycle, port binding
 │   ├── session.hml         # Connection management, heartbeat, reconnect
+│   ├── realtime.hml        # A server-stepped match on top of the session
 │   └── host.hml            # Host authority validation
 ├── src/                    # Raifu Wars game logic
 │   ├── game.hml            # Turn management, start/end lifecycle
@@ -37,10 +38,41 @@ shikikan.hml/
 │   ├── map.hml             # Map decompression, hashing, coins
 │   ├── deck.hml            # Card deck configuration
 │   ├── save_data.hml       # Save/load game state
+│   ├── start_server.hml    # The server: start_server(opts)
 │   ├── id.hml              # Packet ID constants
 │   └── colors.hml          # Player color constants (BGR)
-└── server.hml              # Entry point
+└── server.hml              # Raifu Wars' entry point: start_server({})
 ```
+
+## A real-time game
+
+A game whose server steps the match (rather than relaying moves between clients) keeps the same
+lobby, seating, ready, start and router IPC, and supplies its rules as hooks:
+
+```hemlock
+import { start_server } from "Yotis-Studios/shikikan.hml";
+import { setenv } from "@stdlib/env";
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");   // or set it in the router descriptor
+start_server({
+    realtime: {
+        new_match: fn(seed, seats) { ... },       // -> the match state
+        intent: fn(m, slot, values) { ... },      // the seat's latest intent
+        step: fn(m) { ... },                      // one tick
+        snapshot: fn(m, slot) { return [...]; },  // gn values for that seat
+        over: fn(m) { ... },                      // -> bool, after each tick
+        fingerprint: fn(m) { ... },               // -> string, sent with the end
+    },
+    tick_hz: 30,
+    send_hz: 20,
+});
+```
+
+The match starts when the session does (the host's `GAME_START`) and runs on gn.hml's
+`Server.every()`, on the same thread as packet handlers. Clients send `GBE_RT_INTENT` (172) and
+receive `GBE_RT_START` (171) and `GBE_RT_SNAPSHOT` (173); `src/id.hml` has the layouts and
+`lib/realtime.hml` the details. `test/realtime_test.hml` plays a whole match headless, and passes
+under `FUZZ_DELAY_MS=80 FUZZ_PERCENT=30` too.
 
 ## Building a New Game
 

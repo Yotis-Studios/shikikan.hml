@@ -115,3 +115,13 @@ export let TURN_CHECKSUM = 154;
 // Relayed verbatim to every other client, never read by the server: the Ganbatte engine's
 // session message. A game with no turns has nothing for valid_player_packet to gate on.
 export let GBE_RELAY = 170;
+
+// The engine's real-time channel (lib/realtime.hml, Ganbatte docs/ganbatte/REALTIME.md). Only a
+// server started with opts.realtime reads or sends them; RaifuWars never does.
+//   START     server to each seat: seed, tickHz, sendHz, start tick, your slot, seat count
+//   INTENT    client to server: sequence (u16, wrapping), the client's tick, the game's values
+//   SNAPSHOT  server to each seat: tick, last sequence applied for you, over (0/1),
+//             fingerprint ("" until over), then the game's values
+export let GBE_RT_START = 171;
+export let GBE_RT_INTENT = 172;
+export let GBE_RT_SNAPSHOT = 173;

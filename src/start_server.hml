@@ -1,0 +1,131 @@
+// start_server.hml -- the lobby server, as a function a game's server calls
+//
+// server.hml is start_server({}): RaifuWars, exactly as before. A game with a real-time match
+// passes opts.realtime, its hooks (lib/realtime.hml), and gets the same lobby, seating, ready,
+// start, relay and router IPC with a server-stepped match on top.
+//
+//   opts.realtime   the game's hooks; null or absent for a relay-only game
+//   opts.tick_hz    match ticks a second (default 30)
+//   opts.send_hz    snapshots a second (default 20)
+//   opts.port       listen here instead of a random port in the range (tests)
+
+import { Server, Packet } from "Yotis-Studios/gn.hml";
+import { send_event } from "../lib/lobby.hml";
+import * as id from "./id.hml";
+import { Game } from "./game.hml";
+import { ConnectionManager } from "./connection_manager.hml";
+import { PacketHandler } from "./packet_handler.hml";
+import { randint } from "@stdlib/random";
+import { getenv } from "@stdlib/env";
+import { fuzz_config, fuzz_wrap } from "./fuzz.hml";
+import { Realtime } from "../lib/realtime.hml";
+
+export fn start_server(opts) {
+    // A NARROW, KNOWN RANGE -- because nginx has to name it.
+    //
+    // This used to be randint(10000, 60000), which is fine when players dial the port directly and
+    // impossible to put behind a reverse proxy safely. In nginx mode GameRouter hands the client
+    // `/game/<port>` and nginx maps that path back to 127.0.0.1:<port>, so the location regex decides
+    // which ports the internet may reach. A regex wide enough for 10000-60000 is an open proxy onto
+    // every loopback service on the box -- on the production host that is Gitea (3000), MariaDB
+    // (3306), PostgreSQL (5432), the wiki (8080) and GameRouter itself (42069), each reachable as
+    // /game/<port>. The range below is what makes `^/game/(40[0-9]{3})$` both sufficient and tight.
+    //
+    // KEEP THE TWO IN STEP. Widening this without widening the nginx regex makes lobbies on the new
+    // ports silently unreachable; widening the regex without narrowing what listens there re-opens
+    // the proxy.
+    //
+    // `getenv` returns "" for a variable that is SET BUT EMPTY -- see fuzz.hml, where assuming that
+    // could not happen killed every lobby -- so the empty case falls back alongside the null one.
+    let PORT_MIN = 40000;
+    let PORT_MAX = 40999;
+    let env_min = getenv("RW_GAME_PORT_MIN");
+    let env_max = getenv("RW_GAME_PORT_MAX");
+    if (env_min != null && env_min != "") { PORT_MIN = number(env_min); }
+    if (env_max != null && env_max != "") { PORT_MAX = number(env_max); }
+
+    // Still a random pick rather than a counter: GameRouter spawns these as independent processes and
+    // nothing shared tracks which ports are taken. A thousand ports against the handful of concurrent
+    // lobbies this box holds keeps collisions rare.
+    let port = randint(PORT_MIN, PORT_MAX);
+    // A test pins it (opts.port); GameRouter never does.
+    if (opts != null && opts?.port != null) { port = opts.port; }
+
+    let server = Server();
+    let game = Game(server);
+    // SHIKIKAN_REQUIRE_MAP=0: a session for a game without maps (the Ganbatte engine's). Default
+    // on; RaifuWars never sets it. Same empty-string caveat as the port range above.
+    let env_map = getenv("SHIKIKAN_REQUIRE_MAP");
+    if (env_map != null && env_map == "0") { game.requires_map = false; }
+    let cm = ConnectionManager(server, game);
+    let handler = PacketHandler(cm);
+
+    // A real-time match on top of the session, when the game supplies one. Started by the
+    // session's own start (GAME_START from the host, after the usual gates), stopped by its end.
+    let rt = null;
+    if (opts != null && opts?.realtime != null) {
+        rt = Realtime(server, game, cm, opts.realtime, opts);
+        game.on_started = fn() { rt.start(); };
+        game.on_ended = fn() { rt.stop(); };
+    }
+
+    server.on("ready", fn() {
+        send_event("port", server._port);
+    });
+
+    // Deliberate mistiming, off unless FUZZ_DELAY_MS and FUZZ_PERCENT are both set. Read once at
+    // startup rather than per packet: a fuzzer that could change its own settings mid-match would make
+    // a failing run harder to reproduce, which is the opposite of the point.
+    let fuzz = fuzz_config();
+    if (fuzz != null) {
+        print("FUZZING: " + fuzz.percent + "% of packets delayed up to " + fuzz.delay_ms + "ms");
+    }
+
+    server.on("connect", fn(connection) {
+        // Wrapped before anything else can send to it, so no packet escapes untouched -- including
+        // the ones add_connection itself sends while setting the lobby up.
+        fuzz_wrap(connection, fuzz);
+        if (game.lobby_password == "") {
+            if (!game.game_started) {
+                cm.add_connection(connection);
+            }
+        } else {
+            cm.solicit_lobby_password(connection);
+        }
+    });
+
+    server.on("packet", fn(connection, packet) {
+        if (rt != null && packet.net_id == id.GBE_RT_INTENT) {
+            rt.intent(cm.get_id_from_connection(connection), packet);
+            return;
+        }
+        handler.handle_packet(connection, packet);
+    });
+
+    server.on("disconnect", fn(connection) {
+        if (rt != null) {
+            let slot = cm.get_id_from_connection(connection);
+            if (slot != null) { rt.leave(slot); }
+        }
+        cm.remove_connection(connection);
+    });
+
+    server.on("error", fn(err, connection) {
+        if (connection != null) {
+            let kick_packet = Packet(id.PLAYER_KICK);
+            kick_packet.add("An error occurred sending data.");
+            connection.send(kick_packet);
+            connection.kick();
+            print("Kicked connection due to error: " + err);
+        } else {
+            print("WARNING: server encountered error not caused by a connection");
+            print(err);
+            let kick_packet = Packet(id.PLAYER_KICK);
+            kick_packet.add("The server encountered an error.");
+            server.broadcast(kick_packet);
+            server.close();
+        }
+    });
+
+    server.listen(port);
+}

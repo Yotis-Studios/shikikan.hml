@@ -154,7 +154,9 @@ describe("Game settings", fn() {
         let game = Game(MockServer());
         game.set_one_v_one(true);
         expect(game.onevone).to_be_true();
-        expect(game.num_players).to_equal(2);
+        // 1v1 changes who commands the seats, not how many there are (game.hml, set_one_v_one:
+        // the client is the spec). This expected 2 from before that change.
+        expect(game.num_players).to_equal(4);
     });
 
     test("toggle_deck_card", fn() {
