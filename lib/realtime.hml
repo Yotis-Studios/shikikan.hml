@@ -5,7 +5,8 @@
 // latest intent, snapshots, and the end. Design: Ganbatte engine docs/ganbatte/REALTIME.md.
 //
 // Hooks (opts.realtime), all called on the server's event loop:
-//   new_match(seed, seats)        -> the match state. seats: [{ slot, name, human }], one per base
+//   new_match(seed, seats)        -> the match state. seats: [{ slot, name, human, data }], one per
+//                                 base; data is what the seat sent as GBE_SEAT_DATA, or ""
 //   new_match_with(seed, seats, settings)  optional, used instead of new_match when given: the
 //                                 same, with the lobby's settings the host set before the start,
 //                                 { teams } (GAME_TEAMS; a roster of n seats starts with n,
@@ -80,11 +81,13 @@ export fn Realtime(server, game, cm, hooks, opts) {
                 let p = game.get_player(i);
                 let name = "";
                 let human = false;
+                let data = "";
                 if (p != null) {
                     name = p.name;
                     human = p.connection != null;
+                    if (p?.seat_data != null) { data = p.seat_data; }
                 }
-                seats.push({ slot: i, name: name, human: human });
+                seats.push({ slot: i, name: name, human: human, data: data });
                 i = i + 1;
             }
             self.seats = seats.length;

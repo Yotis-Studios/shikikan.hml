@@ -29,6 +29,7 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
         uniform_color: null,
         skin_color: null,
         hat: null,
+        seat_data: "",     // GBE_SEAT_DATA: what this seat said about itself, for the match
 
         kick: fn(reason) {
             if (self.connection == null) { return; }

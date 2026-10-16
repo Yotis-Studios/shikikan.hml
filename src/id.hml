@@ -125,3 +125,8 @@ export let GBE_RELAY = 170;
 export let GBE_RT_START = 171;
 export let GBE_RT_INTENT = 172;
 export let GBE_RT_SNAPSHOT = 173;
+
+// The engine's seat data: client to server, a seat states a short string about itself (at most
+// 256 characters) that the server keeps on its player and hands a real-time match at its start
+// (new_match_with's seats[i].data). Not relayed. Biplane Battle! sends its plane's loadout.
+export let GBE_SEAT_DATA = 174;

@@ -680,6 +680,14 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.GBE_RELAY) {
                 // The engine's session message: relayed to everyone else, never read here.
                 connection.broadcast(packet);
+            } else if (packet.net_id == id.GBE_SEAT_DATA) {
+                // Kept on the seat's player for the match to read at its start; a string, and
+                // bounded, since it arrives from a client. Not relayed.
+                let pl = g.get_player(i);
+                let v = packet.get(0);
+                if (pl != null && typeof(v) == "string" && v.length <= 256) {
+                    pl.seat_data = v;
+                }
             } else if (packet.net_id == id.TURN_CHECKSUM) {
                 // RELAYED WITHOUT A TURN CHECK, deliberately. Every client sends one of these at
                 // every turn boundary, including the ones whose turn it is not -- a silent
