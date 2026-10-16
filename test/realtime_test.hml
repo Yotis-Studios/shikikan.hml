@@ -111,7 +111,7 @@ async fn play(index, ready_ch, go_ch) {
     }
 
     let r = { slot: slot, started: false, seat_count: 0, snapshots: 0, stale: 0, total: 0,
-              sent: 0, last_seq: -1, last_ack: -1, ack_backwards: 0, fingerprint: "",
+              sent: 0, last_seq: -1, last_ack: -1, ack_backwards: 0, fingerprint: "", queued: 0, queued_max: 0,
               over_tick: 0, mine: 0, humans: 0, first_ms: 0, last_ms: 0 };
     let seq = SEQ_START;
     let last_tick = -1;
@@ -138,8 +138,10 @@ async fn play(index, ready_ch, go_ch) {
                 }
                 r.last_ack = ack;
             }
-            r.mine = p.get(4);
-            r.humans = p.get(5);
+            r.queued = p.get(4);
+            if (r.queued > r.queued_max) { r.queued_max = r.queued; }
+            r.mine = p.get(5);
+            r.humans = p.get(6);
             if (p.get(2) == 1) {
                 r.over_tick = tick;
                 r.fingerprint = p.get(3);
@@ -252,9 +254,12 @@ check(seen.max_per_tick == 1 && seen.applied < INTENTS * CLIENTS,
 
 check(seen.teams == 2, "new_match_with was told the host's two teams (got " + seen.teams + ")");
 
+check(results[2].queued_max >= 2 && results[0].queued_max <= 1,
+    "each snapshot tells a seat how many of its intents wait: the fast sender's queue backs up ("
+    + results[2].queued_max + "), the others' do not (" + results[0].queued_max + ")");
 check(seen.data == "seat data 1", "new_match_with's seats carry each seat's GBE_SEAT_DATA (got '" + seen.data + "')");
 
 print("");
-print("Realtime Tests: " + (10 - failed) + " passed, " + failed + " failed");
+print("Realtime Tests: " + (11 - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "realtime test failed"; }
 exit(0);

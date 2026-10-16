@@ -28,12 +28,21 @@
 // oldest, so a client whose clock runs fast cannot build up latency. The acknowledgement in each
 // snapshot is the last intent a step consumed, not the last received.
 //
+// AND HOW MANY ARE STILL WAITING. A client and the server both tick at tick_hz, so a backlog
+// never drains by itself: every time jitter lands two intents in one tick the queue gains one
+// and keeps it, a tick of input latency each, until intent_buffer (measured: two waiting on a
+// LAN, three in a five-minute match over the internet, 120 ms acknowledged). Each snapshot
+// therefore carries the seat's queue depth after the step, and the client runs its own clock a
+// few percent slow while intents are waiting (and a little fast while the queue runs dry), so
+// the queue drains with nothing dropped: the engine's gbe_realtime.
+//
 // The clock is gn's Server.every(), so a tick runs on the same thread as packet handlers and
 // nothing here is locked. If the loop falls behind it catches up at most max_catchup ticks a
 // period and drops the rest: the match runs slow rather than in bursts.
 
 import { Packet } from "Yotis-Studios/gn.hml";
 import * as id from "../src/id.hml";
+import { roundi } from "@stdlib/math";
 
 // Is u16 sequence a newer than b? Sequences wrap at 65536; b of -1 means none yet.
 export fn seq_newer(a, b) {
@@ -69,6 +78,10 @@ export fn Realtime(server, game, cm, hooks, opts) {
         received: [],     // per slot: the last sequence queued, so a stale or repeated one is ignored
         queue: [],        // per slot: [{ seq, values }] waiting for a step, oldest first
         overflow: 0,      // intents dropped because a seat's queue was full
+        qsum: [],         // per slot: the queue's depth summed over the steps that took from it
+        qn: [],           // per slot: those steps
+        qmax: [],         // per slot: the deepest it was
+        empty: [],        // per slot: steps that found its queue empty (the last intent reused)
         send_acc: 0,      // send_hz accumulated per tick; a round goes out each time it passes tick_hz
         dropped: 0,       // ticks not stepped because the loop fell too far behind
         fingerprint: "",
@@ -95,11 +108,19 @@ export fn Realtime(server, game, cm, hooks, opts) {
             self.received = [];
             self.queue = [];
             self.overflow = 0;
+            self.qsum = [];
+            self.qn = [];
+            self.qmax = [];
+            self.empty = [];
             i = 0;
             while (i < self.seats) {
                 self.acked.push(-1);
                 self.received.push(-1);
                 self.queue.push([]);
+                self.qsum.push(0);
+                self.qn.push(0);
+                self.qmax.push(0);
+                self.empty.push(0);
                 i = i + 1;
             }
             if (self.hooks?.new_match_with != null) {
@@ -161,9 +182,14 @@ export fn Realtime(server, game, cm, hooks, opts) {
             while (slot < self.seats) {
                 let q = self.queue[slot];
                 if (q.length > 0) {
+                    self.qsum[slot] = self.qsum[slot] + q.length;
+                    self.qn[slot] = self.qn[slot] + 1;
+                    if (q.length > self.qmax[slot]) { self.qmax[slot] = q.length; }
                     let e = q.shift();
                     self.acked[slot] = e.seq;
                     self.hooks.intent(self.state, slot, e.values);
+                } else if (self.received[slot] >= 0) {
+                    self.empty[slot] = self.empty[slot] + 1;
                 }
                 slot = slot + 1;
             }
@@ -205,12 +231,17 @@ export fn Realtime(server, game, cm, hooks, opts) {
                 let c = cm.connections[i];
                 if (c != null) {
                     let ack = -1;
-                    if (i < self.seats) { ack = self.acked[i]; }
+                    let queued = 0;
+                    if (i < self.seats) {
+                        ack = self.acked[i];
+                        queued = self.queue[i].length;
+                    }
                     let p = Packet(id.GBE_RT_SNAPSHOT);
                     p.add(self.tick);
                     p.add(ack);
                     p.add(over);
                     p.add(self.fingerprint);
+                    p.add(queued);
                     p.add(self.hooks.snapshot(self.state, i));
                     c.send(p);
                 }
@@ -226,6 +257,18 @@ export fn Realtime(server, game, cm, hooks, opts) {
             self.send_round(1);
             self.stop();
             print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped, " + self.overflow + " intents over the buffer), fingerprint " + self.fingerprint);
+            // Each sending seat's intent queue: how many waited, on average, when a step took one.
+            // Every intent waiting is a tick of latency the player's input carries.
+            let slot = 0;
+            while (slot < self.seats) {
+                if (self.qn[slot] > 0 || self.empty[slot] > 0) {
+                    let avg = 0.0;
+                    if (self.qn[slot] > 0) { avg = self.qsum[slot] / self.qn[slot]; }
+                    print("realtime: seat " + slot + " intent queue " + roundi(avg * 100.0) / 100.0 + " deep on average, " + self.qmax[slot]
+                        + " at most; " + self.empty[slot] + " steps found it empty");
+                }
+                slot = slot + 1;
+            }
         },
 
         stop: fn() {

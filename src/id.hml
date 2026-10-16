@@ -121,7 +121,8 @@ export let GBE_RELAY = 170;
 //   START     server to each seat: seed, tickHz, sendHz, start tick, your slot, seat count
 //   INTENT    client to server: sequence (u16, wrapping), the client's tick, the game's values
 //   SNAPSHOT  server to each seat: tick, last sequence applied for you, over (0/1),
-//             fingerprint ("" until over), then the game's values
+//             fingerprint ("" until over), your intents still queued after this step, then
+//             the game's values
 export let GBE_RT_START = 171;
 export let GBE_RT_INTENT = 172;
 export let GBE_RT_SNAPSHOT = 173;
