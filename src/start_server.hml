@@ -99,7 +99,13 @@ export fn start_server(opts) {
 
     server.on("packet", fn(connection, packet) {
         if (rt != null && packet.net_id == id.GBE_RT_INTENT) {
-            rt.intent(cm.get_id_from_connection(connection), packet);
+            // An intent is a sign of life like any packet. The handler below refreshes the
+            // seat's heartbeat for everything it sees, and intents never reach it: without
+            // this a seat sending thirty a second was dropped by the watchdog after 60 to
+            // 120 s unless it also sent CLIENT_ACK (Biplane's online test, October 16).
+            let slot = cm.get_id_from_connection(connection);
+            if (slot != null) { cm.session.update_heartbeat(slot); }
+            rt.intent(slot, packet);
             return;
         }
         handler.handle_packet(connection, packet);
