@@ -6,13 +6,22 @@
 //
 // Hooks (opts.realtime), all called on the server's event loop:
 //   new_match(seed, seats)        -> the match state. seats: [{ slot, name, human }], one per base
-//   intent(match, slot, values)   the latest intent for a seat; the next step uses it
+//   intent(match, slot, values)   a seat's intent for the step about to run (one a tick, below)
 //   step(match)                   one tick
 //   snapshot(match, slot)         -> an array of gn values for that seat (usually one buffer)
 //   over(match)                   -> whether the match has ended, checked after each tick
 //   fingerprint(match)            -> a string every client is checked against
 //   sent(match)                   optional: after each round of snapshots (clear events here)
 //   leave(match, slot)            optional: a seat's connection went away mid-match
+//
+// ONE INTENT A TICK. A client sends one intent for each of its ticks and predicts its own entity
+// one tick per intent, so the server consumes them the same way: each seat's intents queue on
+// arrival and every step takes the oldest. Applying only the latest on arrival (as v0.2.1 did)
+// loses one whenever jitter lands two inside a tick, and the client's prediction then runs a
+// whole tick ahead of the server and is corrected (about 12 px for a biplane at full speed). An
+// empty queue keeps the seat's last intent; a queue past intent_buffer (default 4) drops its
+// oldest, so a client whose clock runs fast cannot build up latency. The acknowledgement in each
+// snapshot is the last intent a step consumed, not the last received.
 //
 // The clock is gn's Server.every(), so a tick runs on the same thread as packet handlers and
 // nothing here is locked. If the loop falls behind it catches up at most max_catchup ticks a
@@ -32,7 +41,9 @@ export fn Realtime(server, game, cm, hooks, opts) {
     let tick_hz = 30;
     let send_hz = 20;
     let max_catchup = 5;
+    let intent_buffer = 4;
     if (opts != null) {
+        if (opts?.intent_buffer != null) { intent_buffer = opts.intent_buffer; }
         if (opts?.tick_hz != null) { tick_hz = opts.tick_hz; }
         if (opts?.send_hz != null) { send_hz = opts.send_hz; }
         if (opts?.max_catchup != null) { max_catchup = opts.max_catchup; }
@@ -43,12 +54,16 @@ export fn Realtime(server, game, cm, hooks, opts) {
         tick_hz: tick_hz,
         send_hz: send_hz,
         max_catchup: max_catchup,
+        intent_buffer: intent_buffer,
         state: null,
         running: false,
         tick: 0,
         timer: null,
         seats: 0,
-        acked: [],        // per slot: the last intent sequence applied, -1 for none
+        acked: [],        // per slot: the last intent sequence a step consumed, -1 for none
+        received: [],     // per slot: the last sequence queued, so a stale or repeated one is ignored
+        queue: [],        // per slot: [{ seq, values }] waiting for a step, oldest first
+        overflow: 0,      // intents dropped because a seat's queue was full
         send_acc: 0,      // send_hz accumulated per tick; a round goes out each time it passes tick_hz
         dropped: 0,       // ticks not stepped because the loop fell too far behind
         fingerprint: "",
@@ -70,9 +85,14 @@ export fn Realtime(server, game, cm, hooks, opts) {
             }
             self.seats = seats.length;
             self.acked = [];
+            self.received = [];
+            self.queue = [];
+            self.overflow = 0;
             i = 0;
             while (i < self.seats) {
                 self.acked.push(-1);
+                self.received.push(-1);
+                self.queue.push([]);
                 i = i + 1;
             }
             self.state = self.hooks.new_match(game.seed, seats);
@@ -108,15 +128,34 @@ export fn Realtime(server, game, cm, hooks, opts) {
         intent: fn(slot, packet) {
             if (!self.running || slot == null || slot >= self.seats) { return; }
             let seq = packet.get(0);
-            if (seq == null || !seq_newer(seq, self.acked[slot])) { return; }
-            self.acked[slot] = seq;
+            if (seq == null || !seq_newer(seq, self.received[slot])) { return; }
+            self.received[slot] = seq;
             let values = [];
             let i = 2;
             while (i < packet.data.length) {
                 values.push(packet.data[i]);
                 i = i + 1;
             }
-            self.hooks.intent(self.state, slot, values);
+            let q = self.queue[slot];
+            q.push({ seq: seq, values: values });
+            if (q.length > self.intent_buffer) {
+                q.shift();
+                self.overflow = self.overflow + 1;
+            }
+        },
+
+        // Before each step: every seat's oldest queued intent.
+        take_intents: fn() {
+            let slot = 0;
+            while (slot < self.seats) {
+                let q = self.queue[slot];
+                if (q.length > 0) {
+                    let e = q.shift();
+                    self.acked[slot] = e.seq;
+                    self.hooks.intent(self.state, slot, e.values);
+                }
+                slot = slot + 1;
+            }
         },
 
         leave: fn(slot) {
@@ -133,6 +172,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
             }
             let k = 0;
             while (k < steps && self.running) {
+                self.take_intents();
                 self.hooks.step(self.state);
                 self.tick = self.tick + 1;
                 if (self.hooks.over(self.state)) {
@@ -174,7 +214,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
             self.fingerprint = self.hooks.fingerprint(self.state);
             self.send_round(1);
             self.stop();
-            print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped), fingerprint " + self.fingerprint);
+            print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped, " + self.overflow + " intents over the buffer), fingerprint " + self.fingerprint);
         },
 
         stop: fn() {

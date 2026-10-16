@@ -4,7 +4,9 @@
 // start the match, and plays scripted intents against the snapshots. Each seat's intent is a
 // running total, so the final state does not depend on when an intent landed, only on the
 // LAST one landing: the fingerprint every client receives must equal the one computed here
-// from what the clients sent. Sequences start near 65535 so they wrap mid-match.
+// from what the clients sent. Sequences start near 65535 so they wrap mid-match. The last seat
+// sends two intents a snapshot, faster than the ticks consume them: the server must still apply
+// at most one a tick (its queue), and drop only the oldest when the queue is full.
 //
 //   hemlock test/realtime_test.hml
 //   FUZZ_DELAY_MS=80 FUZZ_PERCENT=30 hemlock test/realtime_test.hml   (late, reordered sends)
@@ -22,6 +24,9 @@ let OVER_AT = 90;        // ticks: three seconds at 30 Hz
 let INTENTS = 40;        // each client sends this many, one per snapshot, then goes quiet
 let SEQ_START = 65520;   // wraps after 16
 
+// What the hooks saw, read at the end: this test runs the server in-process.
+let seen = { this_tick: [0, 0, 0, 0], max_per_tick: 0, applied: 0 };
+
 // The toy rules. pos[slot] follows the seat's latest intent; the match ends at OVER_AT.
 let toy = {
     new_match: fn(seed, seats) {
@@ -37,12 +42,16 @@ let toy = {
     },
     intent: fn(m, slot, values) {
         m.latest[slot] = values[0];
+        seen.this_tick[slot] = seen.this_tick[slot] + 1;
+        seen.applied = seen.applied + 1;
     },
     step: fn(m) {
         m.tick = m.tick + 1;
         let i = 0;
         while (i < m.pos.length) {
             m.pos[i] = m.latest[i];
+            if (seen.this_tick[i] > seen.max_per_tick) { seen.max_per_tick = seen.this_tick[i]; }
+            seen.this_tick[i] = 0;
             i = i + 1;
         }
     },
@@ -124,16 +133,22 @@ async fn play(index, ready_ch, go_ch) {
                 r.over_tick = tick;
                 r.fingerprint = p.get(3);
                 r.last_ms = time_ms();
-            } else if (r.sent < INTENTS) {
-                r.total = r.total + slot + 1;
-                let ip = Packet(id.GBE_RT_INTENT);
-                ip.add(seq);
-                ip.add(tick);
-                ip.add(r.total);
-                c.send(ip);
-                r.last_seq = seq;
-                seq = (seq + 1) % 65536;
-                r.sent = r.sent + 1;
+            } else {
+                let burst = 1;
+                if (slot == CLIENTS - 1) { burst = 2; }
+                let b = 0;
+                while (b < burst && r.sent < INTENTS) {
+                    r.total = r.total + slot + 1;
+                    let ip = Packet(id.GBE_RT_INTENT);
+                    ip.add(seq);
+                    ip.add(tick);
+                    ip.add(r.total);
+                    c.send(ip);
+                    r.last_seq = seq;
+                    seq = (seq + 1) % 65536;
+                    r.sent = r.sent + 1;
+                    b = b + 1;
+                }
             }
         }
     }
@@ -220,8 +235,11 @@ check(backwards == 0, "acknowledgements never went backwards across the wrap");
 check(rate_ok, "about 60 snapshots each (20 Hz for 3 s), with 3 humans seen");
 let span = results[0].last_ms - results[0].first_ms;
 check(span >= 2900 && span <= 3300, "90 ticks took " + span + " ms (ideal 3000)");
+print("    intents applied " + seen.applied + " of " + (INTENTS * CLIENTS) + " sent, at most " + seen.max_per_tick + " a seat a tick");
+check(seen.max_per_tick == 1 && seen.applied < INTENTS * CLIENTS,
+    "one intent a seat a tick, even from a seat sending faster (the oldest dropped)");
 
 print("");
-print("Realtime Tests: " + (7 - failed) + " passed, " + failed + " failed");
+print("Realtime Tests: " + (8 - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "realtime test failed"; }
 exit(0);
