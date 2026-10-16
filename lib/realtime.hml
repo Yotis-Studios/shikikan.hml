@@ -9,8 +9,9 @@
 //                                 base; data is what the seat sent as GBE_SEAT_DATA, or ""
 //   new_match_with(seed, seats, settings)  optional, used instead of new_match when given: the
 //                                 same, with the lobby's settings the host set before the start,
-//                                 { teams } (GAME_TEAMS; a roster of n seats starts with n,
-//                                 every seat its own side)
+//                                 { teams, mode } (GAME_TEAMS; a roster of n seats starts with
+//                                 n, every seat its own side; GAME_MODE, 0 until the host sets
+//                                 one, whose meaning is the game's)
 //   intent(match, slot, values)   a seat's intent for the step about to run (one a tick, below)
 //   step(match)                   one tick
 //   snapshot(match, slot)         -> an array of gn values for that seat (usually one buffer)
@@ -124,7 +125,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
                 i = i + 1;
             }
             if (self.hooks?.new_match_with != null) {
-                self.state = self.hooks.new_match_with(game.seed, seats, { teams: game.num_teams });
+                self.state = self.hooks.new_match_with(game.seed, seats, { teams: game.num_teams, mode: game.game_mode });
             } else {
                 self.state = self.hooks.new_match(game.seed, seats);
             }

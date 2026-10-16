@@ -25,7 +25,7 @@ let INTENTS = 40;        // each client sends this many, one per snapshot, then 
 let SEQ_START = 65520;   // wraps after 16
 
 // What the hooks saw, read at the end: this test runs the server in-process.
-let seen = { this_tick: [0, 0, 0, 0], max_per_tick: 0, applied: 0, teams: -1, data: "" };
+let seen = { this_tick: [0, 0, 0, 0], max_per_tick: 0, applied: 0, teams: -1, mode: -1, data: "" };
 
 // The toy rules. pos[slot] follows the seat's latest intent; the match ends at OVER_AT.
 let toy = {
@@ -33,6 +33,7 @@ let toy = {
     // teams before starting, and the match must be told.
     new_match_with: fn(seed, seats, settings) {
         seen.teams = settings.teams;
+        seen.mode = settings.mode;
         if (seats.length > 1) { seen.data = seats[1].data; }
         let m = { tick: 0, seed: seed, pos: [], latest: [], humans: 0 };
         let i = 0;
@@ -104,6 +105,11 @@ async fn play(index, ready_ch, go_ch) {
     ready_ch.send(slot);
     if (index == 0) {
         go_ch.recv();
+        // A mode first, then the teams, as a game that has both sends them. Mode 5 is past
+        // RaifuWars' Zombies (2), which forces one team: GAME_TEAMS after it must still win.
+        let mode = Packet(id.GAME_MODE);
+        mode.add(5);
+        c.send(mode);
         let teams = Packet(id.GAME_TEAMS);
         teams.add(2);
         c.send(teams);
@@ -253,6 +259,7 @@ check(seen.max_per_tick == 1 && seen.applied < INTENTS * CLIENTS,
     "one intent a seat a tick, even from a seat sending faster (the oldest dropped)");
 
 check(seen.teams == 2, "new_match_with was told the host's two teams (got " + seen.teams + ")");
+check(seen.mode == 5, "new_match_with was told the host's mode (got " + seen.mode + ")");
 
 check(results[2].queued_max >= 2 && results[0].queued_max <= 1,
     "each snapshot tells a seat how many of its intents wait: the fast sender's queue backs up ("
