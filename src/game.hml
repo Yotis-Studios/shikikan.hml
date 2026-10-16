@@ -590,6 +590,9 @@ export fn Game(server) {
             if (i >= self.players.length || self.players[i] == null) { self.init_new_player(i); }
             i = i + 1;
         }
+        // The router lists the lobby's seats from this; without it a lobby of eight was shown
+        // as one of four, the router's default.
+        send_event("numPlayers", n);
     };
 
     game.turn_rotation = fn() {
