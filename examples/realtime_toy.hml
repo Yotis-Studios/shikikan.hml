@@ -1,0 +1,65 @@
+// realtime_toy.hml -- a real-time server on toy rules, for the Ganbatte engine's client test
+//
+// The engine proves its gbe_realtime service against this (its gbertsession flow, through
+// tools/net-game.sh with GBE_NET_MODE=realtime), so the client is tested without a game. The
+// engine's copy of these rules is __gbe_realtimeToy* in scripts/gbe_realtime; the two must agree.
+//
+//   intent    [dx], dx in -1..1: the seat's velocity until its next intent
+//   step      every seat moves by its latest dx
+//   snapshot  one byte array: each seat's position as u16 little-endian, offset by 32768
+//   over      at tick OVER_AT (five seconds at 30 Hz)
+//   fingerprint "t<tick>:" then every seat's position, comma separated
+//
+//   SHIKIKAN_REQUIRE_MAP=0 is set here, so the lobby needs no map.
+//   hemlock examples/realtime_toy.hml
+
+import { start_server } from "../src/start_server.hml";
+import { setenv } from "@stdlib/env";
+
+let OVER_AT = 150;
+
+let toy = {
+    new_match: fn(seed, seats) {
+        let m = { tick: 0, pos: [], dx: [] };
+        let i = 0;
+        while (i < seats.length) {
+            m.pos.push(0);
+            m.dx.push(0);
+            i = i + 1;
+        }
+        return m;
+    },
+    intent: fn(m, slot, values) {
+        let dx = values[0];
+        if (dx == null) { dx = 0; }
+        if (dx > 1) { dx = 1; }
+        if (dx < -1) { dx = -1; }
+        m.dx[slot] = dx;
+    },
+    step: fn(m) {
+        m.tick = m.tick + 1;
+        let i = 0;
+        while (i < m.pos.length) {
+            m.pos[i] = m.pos[i] + m.dx[i];
+            i = i + 1;
+        }
+    },
+    snapshot: fn(m, slot) {
+        let b = buffer(m.pos.length * 2);
+        let i = 0;
+        while (i < m.pos.length) {
+            b.write_u16_le(i * 2, m.pos[i] + 32768);
+            i = i + 1;
+        }
+        return [b];
+    },
+    over: fn(m) {
+        return m.tick >= OVER_AT;
+    },
+    fingerprint: fn(m) {
+        return "t" + m.tick + ":" + m.pos.join(",");
+    },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+start_server({ realtime: toy });

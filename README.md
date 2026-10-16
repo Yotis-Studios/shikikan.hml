@@ -72,7 +72,8 @@ The match starts when the session does (the host's `GAME_START`) and runs on gn.
 `Server.every()`, on the same thread as packet handlers. Clients send `GBE_RT_INTENT` (172) and
 receive `GBE_RT_START` (171) and `GBE_RT_SNAPSHOT` (173); `src/id.hml` has the layouts and
 `lib/realtime.hml` the details. `test/realtime_test.hml` plays a whole match headless, and passes
-under `FUZZ_DELAY_MS=80 FUZZ_PERCENT=30` too.
+under `FUZZ_DELAY_MS=80 FUZZ_PERCENT=30` too. `examples/realtime_toy.hml` is a complete server on
+toy rules; the Ganbatte engine tests its client against it (`GBE_NET_MODE=realtime`).
 
 ## Building a New Game
 
