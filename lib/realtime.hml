@@ -6,6 +6,10 @@
 //
 // Hooks (opts.realtime), all called on the server's event loop:
 //   new_match(seed, seats)        -> the match state. seats: [{ slot, name, human }], one per base
+//   new_match_with(seed, seats, settings)  optional, used instead of new_match when given: the
+//                                 same, with the lobby's settings the host set before the start,
+//                                 { teams } (GAME_TEAMS; a roster of n seats starts with n,
+//                                 every seat its own side)
 //   intent(match, slot, values)   a seat's intent for the step about to run (one a tick, below)
 //   step(match)                   one tick
 //   snapshot(match, slot)         -> an array of gn values for that seat (usually one buffer)
@@ -95,7 +99,11 @@ export fn Realtime(server, game, cm, hooks, opts) {
                 self.queue.push([]);
                 i = i + 1;
             }
-            self.state = self.hooks.new_match(game.seed, seats);
+            if (self.hooks?.new_match_with != null) {
+                self.state = self.hooks.new_match_with(game.seed, seats, { teams: game.num_teams });
+            } else {
+                self.state = self.hooks.new_match(game.seed, seats);
+            }
             self.tick = 0;
             self.send_acc = 0;
             self.dropped = 0;
