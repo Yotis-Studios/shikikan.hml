@@ -41,8 +41,23 @@ export fn ConnectionManager(server, game) {
             }
             return true;
         },
+        // EVERY PER-SEAT ARRAY AT LEAST AS LONG AS THE ROSTER. connections starts with ten
+        // entries, which was every roster a map could seat; set_seats (opts.seats) makes rosters
+        // of up to 32, and every loop over the roster -- the slot search below, the host search
+        // in remove_connection -- read past the tenth entry and threw "Array index 10 out of
+        // bounds". The eleventh client to join any lobby was kicked by the error handler, and
+        // a host leaving a lobby of more than ten could not be replaced.
+        _fit_roster: fn() {
+            let n = self.game.num_bases;
+            while (self.connections.length < n) {
+                self.connections.push(null);
+            }
+            if (n > 0) { self.session._grow_to(n - 1); }
+        },
+
         add_connection: fn(connection) {
             let g = self.game;
+            self._fit_roster();
 
             // Reject if game isn't ready (host connected but no map)
             if (g.requires_map && self.connections[g.host] != null && (g.map == null || g.map.hash == null)) {
@@ -84,7 +99,9 @@ export fn ConnectionManager(server, game) {
                             continue;
                         }
                     }
-                    if (self.connections[i] == null) {
+                    // Past the end is a free slot too: a full roster lands beyond it, and the
+                    // seat check below spectates or refuses it.
+                    if (i >= self.connections.length || self.connections[i] == null) {
                         conn_id = i;
                     }
                     i = i + 1;
@@ -283,6 +300,7 @@ export fn ConnectionManager(server, game) {
         },
 
         remove_connection: fn(connection) {
+            self._fit_roster();
             let conn_id = self.get_id_from_connection(connection);
 
             // A connection that was never ADDED still disconnects, and get_id_from_connection

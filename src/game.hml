@@ -200,7 +200,11 @@ export fn Game(server) {
     };
 
     game.init_player_connection = fn(i, connection) {
-        let player = self.players[i];
+        // get_player, not self.players[i]: a spectator sits past the roster, where the array
+        // may not reach yet (it starts at six), and a direct read there throws "Array index
+        // out of bounds" -- which kicked the thirteenth client of a twelve-seat lobby and
+        // would have kicked the seventh of a four-seat one.
+        let player = self.get_player(i);
         if (player == null) {
             self.init_new_player(i);
         }

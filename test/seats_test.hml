@@ -1,0 +1,92 @@
+// seats_test.hml -- a lobby of more than ten seats (opts.seats), headless
+//
+// The connection manager's per-seat array started at ten entries and was never grown to the
+// roster, so the eleventh client to join any lobby was kicked by the error handler ("Array
+// index 10 out of bounds") and a host leaving a lobby of more than ten could not be replaced.
+// Found by Biplane Battle!'s 16-pilot online test. Here: a twelve-seat lobby seats twelve, the
+// thirteenth sits past the roster as a spectator (spectators are allowed by default; its seat
+// read threw too), and when the host leaves the next seat becomes host.
+//
+//   hemlock test/seats_test.hml
+
+import { Client, Packet } from "Yotis-Studios/gn.hml";
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep } from "@stdlib/time";
+
+let PORT = 41970;
+let SEATS = 12;
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+spawn(async fn() {
+    start_server({ port: PORT, seats: SEATS });
+});
+sleep(0.5);
+
+// Seat one client: its slot from CLIENT_INIT, or the kick message if refused.
+fn seat(index) {
+    let c = Client();
+    c.connect("127.0.0.1", PORT);
+    let r = { client: c, slot: null, kicked: "" };
+    while (r.slot == null && r.kicked == "") {
+        let p = c.recv_packet();
+        if (p == null) { r.kicked = "(closed)"; break; }
+        if (p.net_id == id.CLIENT_INIT) { r.slot = p.get(0); }
+        if (p.net_id == id.PLAYER_KICK) { r.kicked = p.get(0); }
+    }
+    if (r.slot != null) {
+        let add = Packet(id.PLAYER_ADD);
+        add.add([0, 0, r.slot, 0]);
+        c.send(add);
+        let nm = Packet(id.PLAYER_NAME);
+        nm.add("seat" + index);
+        c.send(nm);
+    }
+    return r;
+}
+
+let failed = 0;
+fn check(ok, what) {
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+
+print("seats, a lobby of " + SEATS + ":");
+let seated = [];
+let i = 0;
+let slots_ok = true;
+while (i < SEATS) {
+    let r = seat(i);
+    if (r.slot != i) {
+        print("    client " + i + ": slot " + r.slot + ", kicked '" + r.kicked + "'");
+        slots_ok = false;
+    }
+    seated.push(r);
+    i = i + 1;
+}
+check(slots_ok, "every one of " + SEATS + " clients is seated in order");
+
+let extra = seat(SEATS);
+print("    client " + SEATS + ": slot " + extra.slot + ", kicked '" + extra.kicked + "'");
+check(extra.slot == SEATS && extra.kicked == "", "the client past the roster sits as a spectator");
+
+// The host leaves by closing its socket. Not disconnect(): that joins the client's receive
+// task, which is blocked on a full event channel nobody here has read, and waits for ever.
+// Seat 1 then reads its backlog until it is told who hosts now.
+seated[0].client._ws.close();
+let host_seen = -1;
+let tries = 0;
+while (host_seen < 0 && tries < 5000) {
+    let p = seated[1].client.recv_packet();
+    if (p == null) { break; }
+    // Seat 0 was announced as host on joining; the answer is the next host named.
+    if (p.net_id == id.PLAYER_HOST && p.get(0) != 0) { host_seen = p.get(0); }
+    tries = tries + 1;
+}
+check(host_seen == 1, "the host left and seat 1 became host (saw " + host_seen + ")");
+
+print("");
+print("Seats Tests: " + (3 - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "seats test failed"; }
+exit(0);
