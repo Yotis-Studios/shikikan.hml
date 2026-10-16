@@ -505,12 +505,15 @@ export fn ConnectionManager(server, game) {
         } else {
             // Heartbeat timeout — parse slot from "heartbeat:N"
             //
-            // `number`, because split() yields STRINGS and `connections["1"]` is not
-            // `connections[1]`. The reason is built by joining the index onto a label, so the
-            // number survives the round trip only if it is converted back.
+            // `integer(number(...))`, because split() yields STRINGS and `connections["1"]` is
+            // not `connections[1]` -- and number() alone is not enough: it returns the f64 1.0,
+            // and indexing an array with a float throws "Index must be an integer". That throw
+            // landed in the heartbeat task and vanished, so a client that froze with its socket
+            // open was never dropped: it held its seat for the rest of the lobby's life. Found
+            // by Biplane Battle!'s silent-pilot test, the first that let a heartbeat expire.
             let parts = reason.split(":");
             if (parts.length == 2 && parts[0] == "heartbeat") {
-                let slot = number(parts[1]);
+                let slot = integer(number(parts[1]));
                 print("Heartbeat timeout on slot " + slot);
                 let conn = cm.connections[slot];
                 if (conn != null) {

@@ -119,6 +119,10 @@ export fn start_server(opts) {
         cm.remove_connection(connection);
     });
 
+    // A connection's send that failed: tell it why and close it. The PLAYER_KICK is a send on
+    // that same connection, which gn (0.4.2 and later) answers with false rather than
+    // reporting here again; before that, a send to a kicked or vanished connection recursed
+    // through this handler until the stack ran out and the whole lobby segfaulted.
     server.on("error", fn(err, connection) {
         if (connection != null) {
             let kick_packet = Packet(id.PLAYER_KICK);
