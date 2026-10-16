@@ -120,10 +120,24 @@ export fn Game(server) {
             if (player == null) { i = i + 1; continue; }
             let is_cpu = player.is_cpu();
             if (player.sprite == null) {
-                let sprite = 0;
+                // MORE SEATS THAN CHARACTERS, the colours' bug again: drawing until a sprite is
+                // free never ends once all twelve are taken, so a lobby of more than twelve
+                // empty or unpicked seats hung its start (Biplane Battle!'s 16-seat lobbies,
+                // October 16). Once every one is in use they are handed out again in order.
                 let max_chars = 12;
-                while (chosen["" + sprite] == true) {
-                    sprite = randint(0, max_chars - 1);
+                let used = 0;
+                let u = 0;
+                while (u < max_chars) {
+                    if (chosen["" + u] == true) { used = used + 1; }
+                    u = u + 1;
+                }
+                let sprite = 0;
+                if (used >= max_chars) {
+                    sprite = i % max_chars;
+                } else {
+                    while (chosen["" + sprite] == true) {
+                        sprite = randint(0, max_chars - 1);
+                    }
                 }
                 player.sprite = sprite;
                 player.symbol = sprite;

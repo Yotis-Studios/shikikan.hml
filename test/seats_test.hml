@@ -5,7 +5,9 @@
 // index 10 out of bounds") and a host leaving a lobby of more than ten could not be replaced.
 // Found by Biplane Battle!'s 16-pilot online test. Here: a twelve-seat lobby seats twelve, the
 // thirteenth sits past the roster as a spectator (spectators are allowed by default; its seat
-// read threw too), and when the host leaves the next seat becomes host.
+// read threw too), and when the host leaves the next seat becomes host. Then a sixteen-seat
+// lobby with two seated, whose start used to hang for ever handing out character sprites
+// (there are twelve), must start.
 //
 //   hemlock test/seats_test.hml
 
@@ -17,17 +19,26 @@ import { sleep } from "@stdlib/time";
 
 let PORT = 41970;
 let SEATS = 12;
+let BIG_PORT = 41971;
+let BIG_SEATS = 16;
 
 setenv("SHIKIKAN_REQUIRE_MAP", "0");
 spawn(async fn() {
     start_server({ port: PORT, seats: SEATS });
 });
+spawn(async fn() {
+    start_server({ port: BIG_PORT, seats: BIG_SEATS });
+});
 sleep(0.5);
 
 // Seat one client: its slot from CLIENT_INIT, or the kick message if refused.
 fn seat(index) {
+    return seat_at(PORT, index);
+}
+
+fn seat_at(port, index) {
     let c = Client();
-    c.connect("127.0.0.1", PORT);
+    c.connect("127.0.0.1", port);
     let r = { client: c, slot: null, kicked: "" };
     while (r.slot == null && r.kicked == "") {
         let p = c.recv_packet();
@@ -86,7 +97,21 @@ while (host_seen < 0 && tries < 5000) {
 }
 check(host_seen == 1, "the host left and seat 1 became host (saw " + host_seen + ")");
 
+// Sixteen seats, two seated: the host's start reaches the clients.
+let b0 = seat_at(BIG_PORT, 0);
+let b1 = seat_at(BIG_PORT, 1);
+b0.client.send(Packet(id.GAME_START));
+let started = false;
+tries = 0;
+while (!started && tries < 2000) {
+    let p = b1.client.recv_packet();
+    if (p == null) { break; }
+    if (p.net_id == id.GAME_START) { started = true; }
+    tries = tries + 1;
+}
+check(started, "a sixteen-seat lobby with two seated starts (fourteen sprites to hand out, twelve exist)");
+
 print("");
-print("Seats Tests: " + (3 - failed) + " passed, " + failed + " failed");
+print("Seats Tests: " + (4 - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "seats test failed"; }
 exit(0);
