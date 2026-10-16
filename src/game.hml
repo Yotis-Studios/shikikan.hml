@@ -307,16 +307,30 @@ export fn Game(server) {
             }
             i = i + 1;
         }
+        // MORE SEATS THAN COLOURS. A free colour was found by drawing until one was not taken,
+        // which never ends once all eight are: a session of nine or more seats (set_seats) hung
+        // its start forever. Once every colour is in use they are handed out again in order.
+        let used = 0;
+        let c = 0;
+        while (c < COLORS.length) {
+            if (chosen["" + c] == true) { used = used + 1; }
+            c = c + 1;
+        }
         i = 0;
         while (i < self.num_bases) {
             let player = self.players[i];
             if (player.color == null) {
-                let color = 0;
-                while (chosen["" + color] == true) {
-                    color = randint(0, 7);
+                if (used >= COLORS.length) {
+                    player.color = COLORS[i % COLORS.length];
+                } else {
+                    let color = 0;
+                    while (chosen["" + color] == true) {
+                        color = randint(0, 7);
+                    }
+                    player.color = COLORS[color];
+                    chosen["" + color] = true;
+                    used = used + 1;
                 }
-                player.color = COLORS[color];
-                chosen["" + color] = true;
             }
             i = i + 1;
         }
@@ -561,6 +575,23 @@ export fn Game(server) {
     // num_players is the roster in every mode, it is the rotation length in every mode -- and
     // a 1v1 lobby on a six-base map with a roster of four rotates over four, which is what
     // the clients bake and what num_bases could never have said.
+    // A session with no map has no base count to read, so it keeps the default four. A game
+    // that wants more seats (start_server's opts.seats; Biplane Battle! seats up to 32) sets
+    // them here: the roster, the bases and a player for every seat, because start_game and
+    // its helpers index players[0..num_bases-1] and a missing one throws.
+    game.set_seats = fn(n) {
+        self.num_bases = n;
+        self.num_players = n;
+        self.num_teams = n;
+        self.bases = [];
+        let i = 0;
+        while (i < n) {
+            self.bases.push(i);
+            if (i >= self.players.length || self.players[i] == null) { self.init_new_player(i); }
+            i = i + 1;
+        }
+    };
+
     game.turn_rotation = fn() {
         let n = self.num_players;
         if (n < 2) { n = 2; }

@@ -168,4 +168,35 @@ describe("Game settings", fn() {
     });
 });
 
+
+describe("More seats than colours", fn() {
+    test("set_seats(16) seats sixteen with a player each", fn() {
+        let game = Game(MockServer());
+        game.set_seats(16);
+        expect(game.num_bases).to_equal(16);
+        expect(game.num_players).to_equal(16);
+        expect(game.turn_rotation()).to_equal(16);
+        let count = 0;
+        let i = 0;
+        while (i < 16) {
+            if (game.players[i] != null) { count = count + 1; }
+            i = i + 1;
+        }
+        expect(count).to_equal(16);
+    });
+
+    test("colours for sixteen seats are assigned without hanging", fn() {
+        let game = Game(MockServer());
+        game.set_seats(16);
+        game.assign_player_colors();
+        let i = 0;
+        let colored = 0;
+        while (i < 16) {
+            if (game.players[i].color != null) { colored = colored + 1; }
+            i = i + 1;
+        }
+        expect(colored).to_equal(16);
+    });
+});
+
 let results = run();

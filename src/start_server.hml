@@ -8,6 +8,8 @@
 //   opts.tick_hz    match ticks a second (default 30)
 //   opts.send_hz    snapshots a second (default 20)
 //   opts.port       listen here instead of a random port in the range (tests)
+//   opts.seats      seats in the session (default 4, or a map's base count); for a game
+//                   without maps that seats more, up to 32
 
 import { Server, Packet } from "Yotis-Studios/gn.hml";
 import { send_event } from "../lib/lobby.hml";
@@ -57,6 +59,7 @@ export fn start_server(opts) {
     // on; RaifuWars never sets it. Same empty-string caveat as the port range above.
     let env_map = getenv("SHIKIKAN_REQUIRE_MAP");
     if (env_map != null && env_map == "0") { game.requires_map = false; }
+    if (opts != null && opts?.seats != null) { game.set_seats(opts.seats); }
     let cm = ConnectionManager(server, game);
     let handler = PacketHandler(cm);
 
