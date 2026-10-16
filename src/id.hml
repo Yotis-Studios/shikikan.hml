@@ -131,3 +131,9 @@ export let GBE_RT_SNAPSHOT = 173;
 // 256 characters) that the server keeps on its player and hands a real-time match at its start
 // (new_match_with's seats[i].data). Not relayed. Biplane Battle! sends its plane's loadout.
 export let GBE_SEAT_DATA = 174;
+
+// The engine's lobby data: the host states a short string about the lobby (at most 256
+// characters: the game's own settings, e.g. Biplane Battle!'s "powerups=1"). The server keeps it,
+// relays it to the other seats, replays it to joiners, and hands a real-time match it at its start
+// (new_match_with's settings.data).
+export let GBE_LOBBY_DATA = 175;

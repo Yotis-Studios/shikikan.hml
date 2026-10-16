@@ -688,6 +688,14 @@ export fn PacketHandler(connection_manager) {
                 if (pl != null && typeof(v) == "string" && v.length <= 256) {
                     pl.seat_data = v;
                 }
+            } else if (packet.net_id == id.GBE_LOBBY_DATA) {
+                // The host's settings for the lobby, as a string the game reads; bounded, since it
+                // arrives from a client. Relayed so every seat shows them, replayed to joiners.
+                let v = packet.get(0);
+                if (is_host && typeof(v) == "string" && v.length <= 256) {
+                    g.lobby_data = v;
+                    connection.broadcast(packet);
+                }
             } else if (packet.net_id == id.TURN_CHECKSUM) {
                 // RELAYED WITHOUT A TURN CHECK, deliberately. Every client sends one of these at
                 // every turn boundary, including the ones whose turn it is not -- a silent

@@ -53,6 +53,7 @@ export fn Game(server) {
         tier_options: 0,
         lobby_password: "",
         lobby_name: "",
+        lobby_data: "",    // GBE_LOBBY_DATA: the host's settings string, the game's to read
         // A GAME_START arrived while some client had not confirmed the map -- held until the
         // last MAP_ACK lands (or the 20s watchdog gives up waiting). See packet_handler.
         pending_start: false,

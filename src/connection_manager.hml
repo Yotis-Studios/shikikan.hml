@@ -204,6 +204,13 @@ export fn ConnectionManager(server, game) {
                 connection.send(name_packet);
             }
 
+            // The host's settings string (GBE_LOBBY_DATA), when it has set one.
+            if (g.lobby_data != "") {
+                let ld_packet = Packet(id.GBE_LOBBY_DATA);
+                ld_packet.add(g.lobby_data);
+                connection.send(ld_packet);
+            }
+
             // Deck options
             let deck_packet = Packet(id.GAME_DECK);
             deck_packet.add(g.deck.cards);
