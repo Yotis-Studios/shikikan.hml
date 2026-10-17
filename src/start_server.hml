@@ -10,6 +10,9 @@
 //   opts.port       listen here instead of a random port in the range (tests)
 //   opts.seats      seats in the session (default 4, or a map's base count); for a game
 //                   without maps that seats more, up to 32
+//   opts.match_log  a real-time match appends one JSON line here when it ends (lib/realtime.hml);
+//                   SHIKIKAN_MATCH_LOG overrides it, and neither set means no log
+//   opts.game       the game's id, written in each line of the match log
 
 import { Server, Packet } from "Yotis-Studios/gn.hml";
 import { send_event } from "../lib/lobby.hml";
@@ -70,6 +73,10 @@ export fn start_server(opts) {
         rt = Realtime(server, game, cm, opts.realtime, opts);
         game.on_started = fn() { rt.start(); };
         game.on_ended = fn() { rt.stop(); };
+        // Mid-match, the session lets back only the seats it has, and each is handed the match.
+        cm.rejoin_only = true;
+        cm.on_rejoin = fn(slot, connection) { rt.rejoin(slot, connection); };
+        cm.on_exit = fn(code) { rt.closed(code); };
     }
 
     server.on("ready", fn() {

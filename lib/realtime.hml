@@ -20,6 +20,20 @@
 //   fingerprint(match)            -> a string every client is checked against
 //   sent(match)                   optional: after each round of snapshots (clear events here)
 //   leave(match, slot)            optional: a seat's connection went away mid-match
+//   rejoin(match, slot)           optional: that seat is back (the same uid), and has been sent
+//                                 GBE_RT_START at the current tick
+//   summary(match)                optional: an object of the game's own, for the match log
+//
+// REJOINING. The session puts a returning uid back in its slot (connection_manager); once the
+// match has started it takes back only those (a newcomer is told "The match has started."). The
+// returning seat is sent GBE_RT_START with the current tick, as if the match began now, and its
+// intent sequence starts over: the client numbers its intents from 0 again.
+//
+// THE MATCH LOG. One JSON line a match, appended to opts.match_log (or SHIKIKAN_MATCH_LOG; off
+// when neither is set): when, how long, how it ended ("over"; "ended" when the session stopped
+// it first; "closed" with the process's exit code, e.g. 2 when the last seat left), each seat
+// (name, human, how often it left and came back), the server's own figures and the game's
+// summary(). A failed write is printed and otherwise ignored: the log never costs a match.
 //
 // ONE INTENT A TICK. A client sends one intent for each of its ticks and predicts its own entity
 // one tick per intent, so the server consumes them the same way: each seat's intents queue on
@@ -45,6 +59,11 @@
 import { Packet } from "Yotis-Studios/gn.hml";
 import * as id from "../src/id.hml";
 import { roundi } from "@stdlib/math";
+import { stringify } from "@stdlib/json";
+import { now } from "@stdlib/datetime";
+import { getenv } from "@stdlib/env";
+import { time_ms } from "@stdlib/time";
+import { open } from "@stdlib/fs";
 
 // Is u16 sequence a newer than b? Sequences wrap at 65536; b of -1 means none yet.
 export fn seq_newer(a, b) {
@@ -58,7 +77,12 @@ export fn Realtime(server, game, cm, hooks, opts) {
     let send_hz = 20;
     let max_catchup = 5;
     let intent_buffer = 4;
+    let match_log = getenv("SHIKIKAN_MATCH_LOG");
+    if (match_log == null) { match_log = ""; }
+    let game_id = "";
     if (opts != null) {
+        if (opts?.match_log != null && match_log == "") { match_log = opts.match_log; }
+        if (opts?.game != null) { game_id = opts.game; }
         if (opts?.intent_buffer != null) { intent_buffer = opts.intent_buffer; }
         if (opts?.tick_hz != null) { tick_hz = opts.tick_hz; }
         if (opts?.send_hz != null) { send_hz = opts.send_hz; }
@@ -87,6 +111,14 @@ export fn Realtime(server, game, cm, hooks, opts) {
         send_acc: 0,      // send_hz accumulated per tick; a round goes out each time it passes tick_hz
         dropped: 0,       // ticks not stepped because the loop fell too far behind
         fingerprint: "",
+        match_log: match_log,
+        game_id: game_id,
+        roster: [],       // per slot: { name, human } at the start, for the log
+        lefts: [],        // per slot: connections lost mid-match
+        rejoins: [],      // per slot: times it came back
+        started_ms: 0,
+        started_at: "",
+        logged: false,    // this match is in the log already
 
         start: fn() {
             if (self.running) { return; }
@@ -106,6 +138,19 @@ export fn Realtime(server, game, cm, hooks, opts) {
                 i = i + 1;
             }
             self.seats = seats.length;
+            self.roster = [];
+            self.lefts = [];
+            self.rejoins = [];
+            i = 0;
+            while (i < self.seats) {
+                self.roster.push({ name: seats[i].name, human: seats[i].human });
+                self.lefts.push(0);
+                self.rejoins.push(0);
+                i = i + 1;
+            }
+            self.started_ms = time_ms();
+            self.started_at = now().to_iso_string();
+            self.logged = false;
             self.acked = [];
             self.received = [];
             self.queue = [];
@@ -199,7 +244,65 @@ export fn Realtime(server, game, cm, hooks, opts) {
 
         leave: fn(slot) {
             if (!self.running || slot >= self.seats) { return; }
+            self.lefts[slot] = self.lefts[slot] + 1;
             if (self.hooks?.leave != null) { self.hooks.leave(self.state, slot); }
+        },
+
+        // A seat the session has put back (the same uid): the match from now, a fresh sequence.
+        rejoin: fn(slot, connection) {
+            if (!self.running || slot == null || slot >= self.seats) { return; }
+            self.received[slot] = -1;
+            self.acked[slot] = -1;
+            self.queue[slot] = [];
+            self.rejoins[slot] = self.rejoins[slot] + 1;
+            let p = Packet(id.GBE_RT_START);
+            p.add(game.seed);
+            p.add(self.tick_hz);
+            p.add(self.send_hz);
+            p.add(self.tick);
+            p.add(slot);
+            p.add(self.seats);
+            connection.send(p);
+            if (self.hooks?.rejoin != null) { self.hooks.rejoin(self.state, slot); }
+            print("realtime: seat " + slot + " rejoined at tick " + self.tick);
+        },
+
+        // One line in the match log (above). Once a match: the first way it ends is the one kept.
+        log_match: fn(outcome, code?: null) {
+            if (self.logged || self.state == null) { return; }
+            self.logged = true;
+            if (self.match_log == "") { return; }
+            let seats = [];
+            let i = 0;
+            while (i < self.seats) {
+                let r = self.roster[i];
+                seats.push({ slot: i, name: r.name, human: r.human, left: self.lefts[i], rejoined: self.rejoins[i] });
+                i = i + 1;
+            }
+            let rec = {
+                at: now().to_iso_string(),
+                started: self.started_at,
+                game: self.game_id,
+                seed: game.seed,
+                outcome: outcome,
+                seconds: roundi((time_ms() - self.started_ms) / 100.0) / 10.0,
+                ticks: self.tick,
+                dropped_ticks: self.dropped,
+                intents_over_buffer: self.overflow,
+                fingerprint: self.fingerprint,
+                exit_code: code,
+                seats: seats,
+                summary: null,
+            };
+            try {
+                if (self.hooks?.summary != null) { rec.summary = self.hooks.summary(self.state); }
+                let f = open(self.match_log, "a");
+                f.write(stringify(rec) + "\n");
+                f.close();
+                print("realtime: match logged to " + self.match_log + " (" + outcome + ")");
+            } catch (e) {
+                print("realtime: could not log the match to " + self.match_log + ": " + e);
+            }
         },
 
         on_timer: fn(periods) {
@@ -257,6 +360,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
         finish: fn() {
             self.fingerprint = self.hooks.fingerprint(self.state);
             self.send_round(1);
+            self.log_match("over");
             self.stop();
             print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped, " + self.overflow + " intents over the buffer), fingerprint " + self.fingerprint);
             // Each sending seat's intent queue: how many waited, on average, when a step took one.
@@ -273,7 +377,13 @@ export fn Realtime(server, game, cm, hooks, opts) {
             }
         },
 
+        // The process is about to exit (connection_manager.kill_server) with the match running.
+        closed: fn(code) {
+            if (self.running) { self.log_match("closed", code); }
+        },
+
         stop: fn() {
+            if (self.running) { self.log_match("ended"); }
             if (self.timer != null) {
                 server.cancel(self.timer);
                 self.timer = null;

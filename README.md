@@ -62,11 +62,28 @@ start_server({
         snapshot: fn(m, slot) { return [...]; },  // gn values for that seat
         over: fn(m) { ... },                      // -> bool, after each tick
         fingerprint: fn(m) { ... },               // -> string, sent with the end
+        leave: fn(m, slot) { ... },               // optional: a seat's connection went away
+        rejoin: fn(m, slot) { ... },              // optional: that seat is back (same uid)
+        summary: fn(m) { return {...}; },         // optional: the game's part of the match log
     },
     tick_hz: 30,
     send_hz: 20,
+    match_log: "matches.jsonl",                   // optional; SHIKIKAN_MATCH_LOG overrides it
+    game: "my-game",                              // optional: named in each log line
 });
 ```
+
+**Rejoining.** Once the match has started, the lobby takes back only seats it already has: a
+connection presenting a seat's `CLIENT_UID` is put back in that slot and sent `GBE_RT_START` at
+the current tick, and its intent sequence starts over. That holds while the old connection still
+looks alive, too (a dropped Wi-Fi link the server has not noticed yet): the newer one takes the
+seat over. Anyone else is told "The match has started." `test/realtime_rejoin_test.hml` drops a
+seat, brings it back twice and turns a stranger away.
+
+**The match log.** With `match_log` (or `SHIKIKAN_MATCH_LOG`) set, each match appends one JSON
+line when it ends: when and how long, how it ended (`over`; `ended` when the session stopped it;
+`closed` with the exit code, e.g. 2 when the last seat left), each seat with how often it left
+and came back, dropped ticks, the fingerprint, and the game's `summary(m)`.
 
 The match starts when the session does (the host's `GAME_START`) and runs on gn.hml's
 `Server.every()`, on the same thread as packet handlers. Clients send `GBE_RT_INTENT` (172) and

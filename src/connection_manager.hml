@@ -14,6 +14,12 @@ export fn ConnectionManager(server, game) {
         server: server,
         game: game,
         session: Session(server, id.PLAYER_KICK),
+        // A real-time match (start_server with opts.realtime) sets these. Once it has started,
+        // only a seat coming back by uid is let in (rejoin_only), on_rejoin hands it the match,
+        // and on_exit hears the process end so the match can be written down first.
+        rejoin_only: false,
+        on_rejoin: null,
+        on_exit: null,
         // The password lockout's shared counter -- see LOBBY_PASSWORD in packet_handler.
         pass_fails: 0,
         pass_fail_at: 0,
@@ -79,13 +85,47 @@ export fn ConnectionManager(server, game) {
             if (connection?.uid != null) {
                 let i = 0;
                 while (i < g.num_bases) {
+                    // A seat no one has sat in yet has no player: a lobby of more than six
+                    // (the players array's start) reaches them here first, mid-match.
                     let plr = g.get_player(i);
-                    if (plr.uid == connection.uid && plr.connection == null) {
+                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && plr.connection == null) {
                         conn_id = i;
                         break;
                     }
                     i = i + 1;
                 }
+            }
+
+            // A real-time match in progress takes back the seats it already has and no one
+            // else: a newcomer would take over a plane mid-flight.
+            //
+            // THE SAME UID WHILE ITS OLD CONNECTION STILL LOOKS ALIVE takes the seat over. A
+            // dropped Wi-Fi link leaves a half-open socket the server notices only when the
+            // heartbeat watchdog or a failed send does, a minute or more later; until then the
+            // returning pilot would be refused its own plane. The old connection is let go
+            // here, not through remove_connection: that would hand the host away, or end the
+            // lobby when it was the only one, and the seat is about to be filled again. Its
+            // own disconnect, when it comes, finds no slot and is ignored.
+            if (self.rejoin_only && g.game_started && conn_id == null && connection?.uid != null) {
+                let i = 0;
+                while (i < g.num_bases && i < self.connections.length) {
+                    let plr = g.get_player(i);
+                    let old = self.connections[i];
+                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && old != null && old != connection) {
+                        self.connections[i] = null;
+                        self.session.clear_connection(i);
+                        plr.connection = null;
+                        old.kick();
+                        print("Connection replaced (" + i + "): the same uid came back");
+                        conn_id = i;
+                        break;
+                    }
+                    i = i + 1;
+                }
+            }
+            if (self.rejoin_only && g.game_started && conn_id == null) {
+                self.session.kick(connection, "The match has started.");
+                return;
             }
 
             // Find lowest available slot
@@ -240,8 +280,8 @@ export fn ConnectionManager(server, game) {
                 connection.send(speed_packet);
             }
 
-            // Catch up mid-game state
-            if (g.game_started) {
+            // Catch up mid-game state (Raifu Wars': a real-time match hands its own below)
+            if (g.game_started && !self.rejoin_only) {
                 let save_packet = Packet(id.GAME_SAVE);
                 self.server.broadcast(save_packet);
 
@@ -304,6 +344,7 @@ export fn ConnectionManager(server, game) {
             }
 
             print("Connection opened (" + conn_id + ")");
+            if (g.game_started && self.on_rejoin != null) { self.on_rejoin(conn_id, connection); }
         },
 
         remove_connection: fn(connection) {
@@ -391,6 +432,7 @@ export fn ConnectionManager(server, game) {
             // four look like a network fault to the player. The codes are: 0 malformed
             // upload, 1 no host connected in time, 2 last connection left, 24 max lifetime.
             print("Killing server, code " + code);
+            if (self.on_exit != null) { self.on_exit(code); }
             self.session.kick_all("Server closed.");
             self.session.close();
             self.server.close();

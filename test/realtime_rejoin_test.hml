@@ -1,0 +1,243 @@
+// realtime_rejoin_test.hml -- a seat leaves a real-time match and comes back, headless
+//
+// Two gn clients through the real session on a fixed port, the host starting the match. A
+// third of the way in, the second seat drops; it reconnects with the same uid and must be put
+// back in its slot, sent GBE_RT_START at the current tick, and have its intents (numbered from 0
+// again) applied. Then the same uid connects a second time while that connection is still up:
+// the newer one takes the seat over and the older one is let go. A stranger connecting mid-match
+// is turned away. At the end the fingerprint must carry the returning seat's last total, the
+// hooks must have heard one leave and two rejoins, and the match log one line saying so.
+//
+//   hemlock test/realtime_rejoin_test.hml
+
+import { Client, Packet } from "Yotis-Studios/gn.hml";
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import { setenv, getenv, exit } from "@stdlib/env";
+import { sleep, time_ms } from "@stdlib/time";
+import { parse } from "@stdlib/json";
+import { open } from "@stdlib/fs";
+
+let PORT = 41951;
+let OVER_AT = 150;       // ticks: five seconds at 30 Hz
+let DROP_AT = 45;        // the second seat drops at this server tick
+let TAKEOVER_AT = 90;    // and a second connection with its uid takes over at this one
+let QUIET_AT = 130;      // every seat stops sending here, so a late (fuzzed) intent still lands
+let LOG = "/tmp/shikikan_rejoin_test.jsonl";
+
+let seen = { left: [], rejoined: [], applied_after: 0 };
+
+let toy = {
+    new_match: fn(seed, seats) {
+        let m = { tick: 0, pos: [], latest: [], humans: 0 };
+        let i = 0;
+        while (i < seats.length) {
+            m.pos.push(0);
+            m.latest.push(0);
+            if (seats[i].human) { m.humans = m.humans + 1; }
+            i = i + 1;
+        }
+        return m;
+    },
+    intent: fn(m, slot, values) {
+        m.latest[slot] = values[0];
+        if (seen.rejoined.length > 0 && slot == 1) { seen.applied_after = seen.applied_after + 1; }
+    },
+    step: fn(m) {
+        m.tick = m.tick + 1;
+        let i = 0;
+        while (i < m.pos.length) {
+            m.pos[i] = m.latest[i];
+            i = i + 1;
+        }
+    },
+    snapshot: fn(m, slot) {
+        let mine = 0;
+        if (slot < m.pos.length) { mine = m.pos[slot]; }
+        return [mine];
+    },
+    over: fn(m) { return m.tick >= OVER_AT; },
+    fingerprint: fn(m) { return "t" + m.tick + ":" + m.pos.join(","); },
+    leave: fn(m, slot) { seen.left.push(slot); },
+    rejoin: fn(m, slot) { seen.rejoined.push(slot); },
+    summary: fn(m) { return { humans: m.humans, toy: true }; },
+};
+
+let truncate = open(LOG, "w");
+truncate.close();
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+setenv("SHIKIKAN_MATCH_LOG", LOG);
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy" });
+});
+sleep(0.5);
+
+// Connect as `uid` and wait to be seated; the engine's order: CLIENT_UID on open, then on
+// CLIENT_INIT the roster entry and the name. A START that overtakes the INIT (the fuzzer delays
+// each send on its own) goes into `starts`.
+fn seat(uid, starts?: null) {
+    let c = Client();
+    c.connect("127.0.0.1", PORT);
+    let u = Packet(id.CLIENT_UID);
+    u.add(uid);
+    c.send(u);
+    let slot = null;
+    while (slot == null) {
+        let p = c.recv_packet();
+        if (p == null) { return { c: c, slot: null, kicked: "closed" }; }
+        if (p.net_id == id.CLIENT_INIT) { slot = p.get(0); }
+        if (p.net_id == id.PLAYER_KICK) { return { c: c, slot: null, kicked: p.get(0) }; }
+        if (p.net_id == id.GBE_RT_START && starts != null) { starts.push({ tick: p.get(3), slot: p.get(4) }); }
+    }
+    let add = Packet(id.PLAYER_ADD);
+    add.add([0, 0, slot, 0]);
+    c.send(add);
+    let nm = Packet(id.PLAYER_NAME);
+    nm.add(uid);
+    c.send(nm);
+    return { c: c, slot: slot, kicked: "" };
+}
+
+// Play on connection `s` until the end, or (stop_at >= 0) until that server tick. An intent a
+// snapshot, each a running total carried in r; r.quiet reads without sending.
+fn play(s, r, stop_at) {
+    let seq = 0;
+    while (true) {
+        let p = s.c.recv_packet();
+        if (p == null) { r.closed = r.closed + 1; return "closed"; }
+        if (p.net_id == id.GBE_RT_START) {
+            r.starts.push({ tick: p.get(3), slot: p.get(4) });
+            seq = 0;
+        } else if (p.net_id == id.GBE_RT_SNAPSHOT) {
+            let tick = p.get(0);
+            r.mine = p.get(5);
+            if (p.get(2) == 1) {
+                r.fingerprint = p.get(3);
+                return "over";
+            }
+            if (stop_at >= 0 && tick >= stop_at) { return "stopped"; }
+            if (r.quiet || tick >= QUIET_AT) { continue; }
+            r.total = r.total + r.step;
+            let ip = Packet(id.GBE_RT_INTENT);
+            ip.add(seq);
+            ip.add(tick);
+            ip.add(r.total);
+            s.c.send(ip);
+            seq = (seq + 1) % 65536;
+        }
+    }
+}
+
+fn record(step) {
+    return { step: step, total: 0, mine: 0, fingerprint: "", starts: [], closed: 0, quiet: false };
+}
+
+async fn host_task() {
+    let s = seat("uid-a");
+    let r = record(1);
+    sleep(0.4);     // the second seat sits down
+    s.c.send(Packet(id.GAME_START));
+    play(s, r, -1);
+    return r;
+}
+
+let host = spawn(host_task);
+sleep(0.2);
+let b = seat("uid-b");
+let rb = record(2);
+let first = play(b, rb, DROP_AT);
+b.c.disconnect();
+sleep(0.3);
+
+// A stranger, mid-match. Its client is closed here, before the next one connects: a socket the
+// server closed is still open in this process until the client closes it, and left to be
+// collected later it closed a newer client's socket that had been given the same number (the
+// next seat's connection then died 30 ms in, in about half the runs).
+let stranger = seat("uid-c");
+stranger.c.disconnect();
+
+// Back with the same uid. It flies to TAKEOVER_AT, then only reads (in its own task, so the
+// server's sends to it are taken while the next connection sits down) until it is let go.
+let b2 = seat("uid-b", rb.starts);
+let r2_slot = b2.slot;
+async fn second_task(s, r) {
+    play(s, r, TAKEOVER_AT);
+    r.quiet = true;
+    r.end = play(s, r, -1);
+    return r;
+}
+let t2 = spawn(second_task, b2, rb);
+sleep(1.6);
+
+// The same uid again while b2 is still up: b3 takes the seat, b2 is let go.
+let b3_starts = [];
+let b3 = seat("uid-b", b3_starts);
+let r3_slot = b3.slot;
+let rb2 = join(t2);
+let b2_end = rb2.end;
+rb = rb2;
+let k = 0;
+while (k < b3_starts.length) {
+    rb.starts.push(b3_starts[k]);
+    k = k + 1;
+}
+rb.quiet = false;
+let end = play(b3, rb, -1);
+let rh = join(host);
+sleep(0.2);
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+
+print("");
+print("realtime rejoin:");
+print("    host total " + rh.total + ", fingerprint " + rh.fingerprint);
+print("    seat 1 total " + rb.total + ", starts " + rb.starts.length + ", fingerprint " + rb.fingerprint);
+check(b.slot == 1 && first == "stopped", "the second seat sat in slot 1 and flew to tick " + DROP_AT);
+// Under the fuzzer the kick's message can be held past the close, so a bare close counts there.
+let fuzzing = getenv("FUZZ_PERCENT") != null && getenv("FUZZ_PERCENT") != "";
+check(stranger.slot == null && (stranger.kicked == "The match has started." || (fuzzing && stranger.kicked == "closed")),
+    "a stranger mid-match is turned away (got '" + stranger.kicked + "')");
+check(r2_slot == 1, "the same uid is put back in slot 1 (got " + r2_slot + ")");
+let second_tick = -1;
+if (rb.starts.length > 1) { second_tick = rb.starts[1].tick; }
+check(rb.starts.length >= 3 && rb.starts[1].slot == 1 && second_tick >= DROP_AT,
+    "the returning seat is sent GBE_RT_START at the current tick (" + second_tick + ")");
+check(r3_slot == 1 && b2_end == "closed", "the same uid again takes the seat over and the older connection is let go");
+check(end == "over" && rb.fingerprint == rh.fingerprint, "both seats see the end and the same fingerprint");
+let expected = "t" + OVER_AT + ":" + rh.total + "," + rb.total;
+check(rh.fingerprint.starts_with(expected), "the fingerprint carries the returning seat's last total (" + expected + " in " + rh.fingerprint + ")");
+check(seen.left.length == 1 && seen.left[0] == 1, "leave heard once, for slot 1 (" + seen.left.length + ")");
+check(seen.rejoined.length == 2 && seen.applied_after > 0, "rejoin heard twice, and intents applied after it (" + seen.applied_after + ")");
+
+let f = open(LOG, "r");
+let text = f.read();
+f.close();
+let lines = [];
+let parts = text.split("\n");
+let i = 0;
+while (i < parts.length) {
+    if (parts[i] != "") { lines.push(parts[i]); }
+    i = i + 1;
+}
+check(lines.length == 1, "the match log has one line (" + lines.length + ")");
+if (lines.length == 1) {
+    let rec = parse(lines[0]);
+    print("    " + lines[0]);
+    check(rec.outcome == "over" && rec.ticks == OVER_AT && rec.game == "toy" && rec.fingerprint == rh.fingerprint,
+        "it says the match ran to its end, with the game and the fingerprint");
+    check(rec.seats[1].left == 1 && rec.seats[1].rejoined == 2 && rec.seats[1].human && rec.seats[0].left == 0,
+        "it says slot 1 left once and came back twice");
+    check(rec.summary.humans == 2 && rec.summary.toy, "it carries the game's summary");
+    check(rec.seconds >= 4.5 && rec.seconds <= 6.5, "it says how long (" + rec.seconds + " s)");
+}
+
+print("");
+print("Realtime Rejoin Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "realtime rejoin test failed"; }
+exit(0);
