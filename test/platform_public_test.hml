@@ -35,7 +35,7 @@ setenv("SHIKIKAN_REQUIRE_MAP", "0");
 let commands = channel(16);
 let ctx = { v: null };
 spawn(async fn() {
-    start_server({ realtime: toy, port: PORT, game: "toy", seats: 3, jwks: fx.JWKS, commands: commands,
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 4, jwks: fx.JWKS, commands: commands,
         public: true, public_start_ms: START_MS, auth_timeout_ms: 800, public_lobby_data: "mode=dogfight",
         on_start: fn(c) { ctx.v = c; } });
 });
@@ -89,7 +89,9 @@ check(banned.slot == null && kicked(banned) == "You cannot join public matches r
 reserve("t-stale", "g:1", 50);
 wait(0.2);
 let stale = join(fx.G1, "t-stale", "uid-stale");
-check(stale.slot == null && kicked(stale) == "Use Quick Play to join this match.", "an expired ticket is refused");
+let stale_reason = kick_reason(stale, id.PLAYER_KICK, 5000);
+check(stale.slot == null && stale_reason == "Use Quick Play to join this match.", "an expired ticket is refused, after waiting in case it was on its way (" + stale_reason + ")");
+
 
 reserve("t-wrong", "g:2", 30000);
 let wrong = join(fx.G1, "t-wrong", "uid-wrong");
@@ -103,7 +105,19 @@ check(a.slot == 0 && auth != null && auth.get(0) == "g:1", "g:1 sits down on its
 reserve("t-b", "g:2", 30000);
 let b = join(fx.G2, "t-b", "uid-b");
 check(b.slot == 1, "g:2 too (" + b.slot + ")");
-check(until(fn() { return last_is("humans", 2); }, 1000) && last_is("bots", 1), "the router hears two humans and one bot");
+check(until(fn() { return last_is("humans", 2); }, 1000) && last_is("bots", 2), "the router hears two humans and two bots");
+
+// The router's reserve can arrive after the player it is for: the ticket waits for it.
+let early = connect(PORT);
+send(early, id.GBE_AUTH, [fx.NO_CHAT, "t-late"]);
+send(early, id.CLIENT_UID, ["uid-early"]);
+wait(0.5);
+commands.send({ cmd: "reserve", data: { ticket: "t-late", sub: "g:5", name: "", expires: time_ms() + 30000 } });
+let early_auth = wait_for(early, id.GBE_AUTH, 3000);
+check(early_auth != null && early_auth.get(0) == "g:5", "a ticket that beats its reservation is honoured when the reservation lands");
+check(until(fn() { return events.find("join", "g:5") != null; }, 2000), "and that player sits down");
+disconnect(early);
+check(until(fn() { return events.find("leave", "g:5") != null && last_is("humans", 2); }, 2000), "(then leaves the lobby again, freeing the seat)");
 
 // The first player is not a host: no kicking, no starting.
 send(a, id.PLAYER_KICK, [1]);
@@ -121,11 +135,17 @@ let c = join(fx.G3, "t-c", "uid-c");
 check(c.slot == 2 && wait_for(c, id.GBE_RT_START, 2000) != null, "a Quick Play player takes the bot's seat mid-match (" + c.slot + ")");
 let t = select([took], 1000);
 check(t != null && t.value.slot == 2 && t.value.sub == "g:3" && t.value.name == "Cat", "the game's take_seat hook hears it");
-check(until(fn() { return last_is("joinable", false); }, 1000) && last_is("humans", 3) && last_is("bots", 0),
-    "and the router hears three humans, no bots, not joinable");
+check(until(fn() { return last_is("humans", 3); }, 1000) && last_is("bots", 1) && last_is("joinable", true),
+    "and the router hears three humans, one bot, still joinable");
 
 reserve("t-d", "u:7", 30000);
-let full = join(fx.U7, "t-d", "uid-d");
+let last = join(fx.U7, "t-d", "uid-d");
+check(last.slot == 3 && wait_for(last, id.GBE_RT_START, 2000) != null, "the last bot's seat goes the same way");
+check(until(fn() { return last_is("joinable", false); }, 1000) && last_is("humans", 4) && last_is("bots", 0),
+    "then four humans, no bots, not joinable");
+
+reserve("t-e", "g:5", 30000);
+let full = join(fx.NO_CHAT, "t-e", "uid-e");
 check(full.slot == null && kicked(full) == "The match has started.", "with no bot left, a newcomer is turned away");
 
 disconnect(b);

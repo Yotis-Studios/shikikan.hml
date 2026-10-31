@@ -137,6 +137,8 @@ check(anon.slot == null, "nor does a client with a's uid and no token");
 let a2 = seat(fx.G1, "uid-other");
 check(a2.slot == 0 && wait_for(a2, id.GBE_RT_START, 2000) != null, "g:1 takes its seat back, whatever uid it brings (" + a2.slot + ")");
 check(events.count("join", "g:1") == 2, "and the router hears g:1 join again");
+let a3 = seat(fx.G1, "uid-third");
+check(a3.slot == 0 && kicked(a2) == "You joined this match from somewhere else.", "g:1 on yet another connection takes the seat over; the older one is told why");
 
 // The router closes the match: everyone told why, the process would exit with 3.
 let exited = channel(1);

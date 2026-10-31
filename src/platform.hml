@@ -48,6 +48,7 @@ let LINES_KEPT = 50;
 let LINES_REPORTED = 30;
 let REPORTS_PER_CONNECTION = 3;
 let PUBLIC_CHAT_MAX = 200;
+let TICKET_WAIT_MS = 3000;
 
 fn env_or(name, fallback) {
     let v = getenv(name);
@@ -116,6 +117,7 @@ export fn Platform(server, game, cm, opts) {
         muted: {},          // sub -> true
         lines: [],          // the recent chat: { at, slot, sub, name, text }
         pending: [],        // public: connections not admitted yet, { connection, at }
+        parked: [],         // public: a ticket not heard of yet, { connection, token, ticket, until }
         first_seated_at: 0,
         // What the router was last told. joinable_sent rather than a null joinable: comparing null
         // with a bool in Hemlock is false both ways, so a null here would never report the first.
@@ -142,6 +144,9 @@ export fn Platform(server, game, cm, opts) {
                     let e = self.pending[i];
                     if (e.connection?.admitted == true) {
                         // admitted: no longer waiting
+                    } else if (e.connection?.parked == true && now - e.at < self.auth_timeout_ms + TICKET_WAIT_MS) {
+                        // signed in, its ticket waiting for its reservation: the parked list decides
+                        kept.push(e);
                     } else if (now - e.at >= self.auth_timeout_ms) {
                         cm.session.kick(e.connection, "Sign in to Yotis Online to play online.");
                     } else {
@@ -150,6 +155,18 @@ export fn Platform(server, game, cm, opts) {
                     i = i + 1;
                 }
                 self.pending = kept;
+                // Tickets whose reservation may still be on its way: try again, or give up.
+                let parked = self.parked;
+                self.parked = [];
+                let q = 0;
+                while (q < parked.length) {
+                    let e = parked[q];
+                    if (e.connection?.sub == null) {
+                        if (now >= e.until) { cm.session.kick(e.connection, "Use Quick Play to join this match."); }
+                        else { self.authenticate(e.connection, e.token, e.ticket, e.until); }
+                    }
+                    q = q + 1;
+                }
                 self.auto_start(now);
             }
             let tickets = self.reservations.keys();
@@ -256,9 +273,16 @@ export fn Platform(server, game, cm, opts) {
             return player?.sub == null || player.sub == connection?.sub;
         },
 
-        // GBE_AUTH [token, ticket].
-        authenticate: fn(connection, token, ticket) {
+        // GBE_AUTH [token, ticket]. `parked_until` is set when the tick tries a parked one again.
+        //
+        // THE TICKET CAN BEAT ITS RESERVATION HERE. The router writes `reserve` to this server's
+        // stdin and then answers the player, who connects at once; the command waits for the next
+        // tick, and the player's GBE_AUTH can be handled first. So the commands already waiting
+        // are taken now, and a ticket this server has not heard of is held for TICKET_WAIT_MS
+        // (the tick tries it again) before it is refused.
+        authenticate: fn(connection, token, ticket, parked_until?: null) {
             if (connection?.sub != null) { return; }
+            self.take_commands();
             let claims = verify_player_token(token, self.jwks, time_ms() / 1000);
             if (claims == null) {
                 cm.session.kick(connection, "Please sign in again.");
@@ -275,7 +299,11 @@ export fn Platform(server, game, cm, opts) {
                 return;
             }
             if (self.public) {
-                let pinned = self.slot_pinned_to(sub);
+                // A seat already theirs takes them back without a ticket -- but not on a parked
+                // ticket's retry: the player may have sat down meanwhile on a connection of
+                // their own, and a parked one is only ever admitted by its ticket.
+                let pinned = null;
+                if (parked_until == null) { pinned = self.slot_pinned_to(sub); }
                 let held = false;
                 if (typeof(ticket) == "string" && self.reservations.has(ticket)) {
                     let r = self.reservations[ticket];
@@ -283,11 +311,24 @@ export fn Platform(server, game, cm, opts) {
                     if (held) { self.reservations.delete(ticket); }
                 }
                 if (pinned == null && !held) {
+                    if (typeof(ticket) == "string" && ticket != "" && !self.reservations.has(ticket)) {
+                        let until = parked_until;
+                        if (until == null) { until = time_ms() + TICKET_WAIT_MS; }
+                        connection.parked = true;
+                        self.parked.push({ connection: connection, token: token, ticket: ticket, until: until });
+                        return;
+                    }
                     cm.session.kick(connection, "Use Quick Play to join this match.");
                     return;
                 }
                 connection.admitted = true;
             }
+            // ONE SEAT PER PLAYER. The same player on a second connection (a dropped link the
+            // server has not noticed yet, or another window) takes the seat over: the older
+            // connection is told why and let go here, as add_connection lets go a replaced uid,
+            // so the seat is free for this one now rather than when its disconnect lands.
+            let older = self.connection_of(sub);
+            if (older != null && older != connection) { self.replace(older); }
             connection.sub = sub;
             connection.claims = claims;
             let reply = Packet(id.GBE_AUTH);
@@ -313,6 +354,25 @@ export fn Platform(server, game, cm, opts) {
                 // Its CLIENT_UID came first and could not seat it then.
                 cm.add_connection(connection);
             }
+        },
+
+        // Let a seated connection go without giving its seat away: the same player is coming back
+        // on another. Its own disconnect, when it lands, finds no slot and is ignored.
+        replace: fn(older) {
+            let i = cm.get_id_from_connection(older);
+            if (i != null) {
+                cm.connections[i] = null;
+                cm.session.clear_connection(i);
+                let pl = game.get_player(i);
+                if (pl != null) {
+                    pl.connection = null;
+                    // In the lobby a seat is nobody's once empty (game.reset_player); the newer
+                    // connection sits down like anyone. Under way, the pin brings it back here.
+                    if (!game.game_started) { pl.sub = null; }
+                }
+            }
+            cm.session.kick(older, "You joined this match from somewhere else.");
+            print("platform: " + older.sub + " came back on another connection");
         },
 
         slot_pinned_to: fn(sub) {

@@ -303,6 +303,9 @@ export fn Game(server) {
             if (!self.game_started) {
                 player.sprite = null;
                 player.symbol = null;
+                // A seat left in the lobby is anybody's again. Pinned seats (src/platform.hml)
+                // are for coming back to a match under way.
+                player.sub = null;
             }
         }
     };
