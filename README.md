@@ -92,6 +92,43 @@ receive `GBE_RT_START` (171) and `GBE_RT_SNAPSHOT` (173); `src/id.hml` has the l
 under `FUZZ_DELAY_MS=80 FUZZ_PERCENT=30` too. `examples/realtime_toy.hml` is a complete server on
 toy rules; the Ganbatte engine tests its client against it (`GBE_NET_MODE=realtime`).
 
+## Yotis Online
+
+`src/platform.hml` (platform phase P4, yo-account-api `docs/PLATFORM.md`). A client that sends none
+of this to a lobby GameRouter did not make public plays exactly as before.
+
+**Who is playing.** A client sends `GBE_AUTH` (176) `[player token, ticket]` before `CLIENT_UID`.
+The token (Ed25519, from the account service) is verified here, through libcrypto
+(`lib/identity.hml`), against the key set GameRouter passes in `ROUTER_JWKS`; the reply is
+`GBE_AUTH [sub, name]`. The seat is then pinned to that `sub`: once a match has started, a seat
+with a sub goes back only to a connection with the same sub, so a uid (which a client makes up)
+no longer moves anyone into someone else's seat, and the returning player gets their seat back
+whatever uid they bring. The player's name is the token's. GameRouter hears `join` and `leave`
+with the sub.
+
+**Public matches** (`ROUTER_PUBLIC=1`, Quick Play). Nobody is seated without a verified token and
+either the ticket GameRouter reserved for their sub or a seat already theirs; a connection that
+does not authenticate within 10 s is put out, and so is a token carrying a public-play ban. There is
+no host: kick, password, name, settings, start and end are off, and the server starts the match
+`SHIKIKAN_PUBLIC_START_S` (20) seconds after its first player sits down, or once every seat is
+taken, with `SHIKIKAN_PUBLIC_LOBBY_DATA` as its settings. Empty seats are the game's bots. A
+real-time game with a `take_seat(match, slot, { name, sub })` hook stays joinable after the start:
+a Quick Play player takes a bot's seat. GameRouter hears `public`, `humans`, `bots` and `joinable`.
+
+**Chat** is refused from muted players (GameRouter's `mute`, or a chat ban in the token), starred
+out where it has a word from `SHIKIKAN_CHAT_FILTER` (a file, one a line), capped at 200 characters
+in public matches, and the last 50 lines are kept. **Reports**: `GBE_REPORT` (178) `[slot, reason]`
+from a verified player becomes a `report` event with both subs, the reason and the last 30 lines,
+so a report carries what was said rather than what the reporter says was said. `GBE_ANNOUNCE`
+(177) `[text]` is a line from the server or a moderator.
+
+**GameRouter's commands** on stdin, one JSON line each: `kick {sub, reason}` (and not let back),
+`mute {sub}`, `announce {text}`, `close {reason}` (exit code 3), `reserve {ticket, sub, name,
+expires}`, `jwks {keys}`.
+
+`test/identity_test.hml`, `test/platform_test.hml` (a private lobby) and
+`test/platform_public_test.hml` (a Quick Play match) cover these.
+
 ## Building a New Game
 
 To build a different game on shikikan:

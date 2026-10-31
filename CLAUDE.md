@@ -19,6 +19,8 @@ Two layers:
 
 - `src/start_server.hml` — the server as `start_server(opts)`; `server.hml` is
   `start_server({})`, Raifu Wars. `opts.realtime` adds a match (see README, "A real-time game")
+- `src/platform.hml` — Yotis Online on the session: verified players and pinned seats, public
+  (Quick Play) matches, chat moderation, reports, GameRouter's commands
 - `src/` — Raifu Wars game logic (first consumer of lib/)
   - Turn-based gameplay: roll, move, attack, end turn
   - Map loading: zlib decompression, sha1 hashing
@@ -58,7 +60,20 @@ Two layers:
 {"event":"gameSpeed","data":2}
 {"event":"gameLength","data":1}
 {"event":"spectators","data":true}
+{"event":"gameMode","data":2}
+{"event":"public","data":true}
+{"event":"humans","data":2}
+{"event":"bots","data":1}
+{"event":"joinable","data":true}
+{"event":"join","data":{"sub":"g:12","name":"Ace","slot":0}}
+{"event":"leave","data":{"sub":"g:12","slot":0}}
+{"event":"report","data":{"match":"...","reporter":"g:12","reported":"u:5","reason":"...","lines":[...]}}
 ```
+
+Commands on stdin (src/platform.hml): kick, mute, announce, close, reserve, jwks -- see README,
+"Yotis Online". `lib/identity.hml` verifies player tokens through libcrypto (Ed25519 is not in
+@stdlib/crypto). Tests that run the server in-process share nothing with it but channels
+(`test/harness.hml` says why: arrays shared across tasks segfaulted).
 
 ## Running
 

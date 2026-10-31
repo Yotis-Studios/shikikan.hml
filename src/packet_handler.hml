@@ -39,6 +39,10 @@ export fn PacketHandler(connection_manager) {
             let cm = self.connection_manager;
             let i = cm.get_id_from_connection(connection);
             let is_host = g.host == i;
+            // A public (Quick Play) match has no host: nobody there chose the other players, so
+            // nobody gets to kick, lock, rename, start or end it (src/platform.hml).
+            let pf = cm.platform;
+            if (pf != null && pf.public) { is_host = false; }
             let is_player = i != null && i < g.num_bases;
             let cur_player_idx = g.turn % g.turn_rotation();
             let half = integer(g.num_players / 2);
@@ -81,10 +85,16 @@ export fn PacketHandler(connection_manager) {
                 if (i != null) {
                     g.get_player(i).uid = uid;
                 } else {
-                    if (g.lobby_password == "") {
+                    if (g.lobby_password == "" && (pf == null || pf.may_seat(connection))) {
                         cm.add_connection(connection);
                     }
                 }
+
+            } else if (packet.net_id == id.GBE_AUTH) {
+                if (pf != null) { pf.authenticate(connection, packet.get(0), packet.get(1)); }
+
+            } else if (packet.net_id == id.GBE_REPORT) {
+                if (pf != null) { pf.report(connection, i, packet.get(0), packet.get(1)); }
 
             } else if (packet.net_id == id.CLIENT_READY) {
                 let ready_player = g.get_player(i);
@@ -98,6 +108,10 @@ export fn PacketHandler(connection_manager) {
             } else if (packet.net_id == id.MESSAGE) {
                 let message = packet.get(0);
                 if (!chat_ok(connection, message, time_ms())) { return; }
+                if (pf != null) {
+                    message = pf.chat(connection, i, message);
+                    if (message == null) { return; }
+                }
                 let msg_packet = Packet(id.MESSAGE);
                 msg_packet.add(message);
                 self.server.broadcast(msg_packet);
@@ -127,6 +141,8 @@ export fn PacketHandler(connection_manager) {
 
             } else if (packet.net_id == id.PLAYER_NAME) {
                 let name = packet.get(0);
+                // A verified player is called what their token says, not what their client says.
+                if (connection?.claims != null) { name = connection.claims.name; }
                 let player = g.get_player(i);
                 if (player != null) {
                     player.name = name;
@@ -522,6 +538,10 @@ export fn PacketHandler(connection_manager) {
                 let team = packet.get(0);
                 let chat_msg = packet.get(1);
                 if (!chat_ok(connection, chat_msg, time_ms())) { return; }
+                if (pf != null) {
+                    chat_msg = pf.chat(connection, i, chat_msg);
+                    if (chat_msg == null) { return; }
+                }
                 let chat_packet = Packet(id.PLAYER_CHAT);
                 chat_packet.add(i);
                 chat_packet.add(team);

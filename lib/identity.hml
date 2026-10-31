@@ -1,0 +1,143 @@
+// identity.hml -- who a connection is: a Yotis Online player token, verified here
+//
+// The account service (yo-account-api lib/playerTokens.js) signs player tokens with Ed25519 (a JWT,
+// alg EdDSA, the key named by kid). Anything holding the public key set can verify one and nothing
+// can mint one without the account service's private key, so a seat pinned to a token's `sub` is
+// a seat pinned to that player. Claims: iss "yotisonline", sub "u:<id>" (an account) or "g:<id>"
+// (a guest), kind, name, role (staff), restrict (["chat", "public_play@<game>", ...], the bans in
+// force when it was made), iat, exp.
+//
+// THE KEY SET comes from GameRouter, not from the account service: the router already fetches it to
+// check Quick Play tokens and hands it to every match it spawns (ROUTER_JWKS, then a `jwks` command
+// when it changes), so a game server makes no HTTP calls at all.
+//
+// THE SIGNATURE is checked by OpenSSL's libcrypto, the library @stdlib/crypto already loads.
+// @stdlib/crypto has RSA and ECDSA but not Ed25519, and Ed25519 needs nothing it does not have:
+// a raw 32-byte public key (EVP_PKEY_new_raw_public_key) and a one-shot EVP_DigestVerify with no
+// digest. Every call below is non-variadic, which the FFI requires.
+
+import "libcrypto.so.3";
+import { parse } from "@stdlib/json";
+import { from_bytes } from "@stdlib/strings";
+
+extern fn EVP_PKEY_new_raw_public_key(type: i32, engine: ptr, key: ptr, keylen: u64): ptr;
+extern fn EVP_PKEY_free(pkey: ptr): void;
+extern fn EVP_MD_CTX_new(): ptr;
+extern fn EVP_MD_CTX_free(ctx: ptr): void;
+extern fn EVP_DigestVerifyInit(ctx: ptr, pctx: ptr, md: ptr, engine: ptr, pkey: ptr): i32;
+extern fn EVP_DigestVerify(ctx: ptr, sig: ptr, siglen: u64, data: ptr, datalen: u64): i32;
+
+let EVP_PKEY_ED25519 = 1087;
+let ISSUER = "yotisonline";
+let B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+// base64url (no padding) to an array of byte values, or null if it is not base64url.
+export fn b64url_bytes(s) {
+    let out = [];
+    let acc = 0;
+    let bits = 0;
+    let i = 0;
+    while (i < s.length) {
+        let v = B64URL.find(s.slice(i, i + 1));
+        if (v < 0) { return null; }
+        acc = ((acc << 6) | v) & 0xFFFFFF;
+        bits = bits + 6;
+        if (bits >= 8) {
+            bits = bits - 8;
+            out.push((acc >> bits) & 255);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Bytes into memory OpenSSL can read; the caller frees it.
+fn to_ptr(bytes) {
+    let n = bytes.length;
+    if (n == 0) { n = 1; }
+    let p = alloc(n);
+    memset(p, 0, n);
+    let i = 0;
+    while (i < bytes.length) {
+        let b: u8 = bytes[i];
+        memset(p + i, b, 1);
+        i = i + 1;
+    }
+    return p;
+}
+
+// Whether `sig` (64 bytes) is `public_key`'s (32 bytes) Ed25519 signature of `data` (bytes).
+export fn ed25519_verify(public_key, data, sig) {
+    if (public_key.length != 32 || sig.length != 64) { return false; }
+    let key_p = to_ptr(public_key);
+    let pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, null, key_p, 32);
+    free(key_p);
+    if (pkey == null) { return false; }
+    let ctx = EVP_MD_CTX_new();
+    if (ctx == null) {
+        EVP_PKEY_free(pkey);
+        return false;
+    }
+    let ok = false;
+    if (EVP_DigestVerifyInit(ctx, null, null, null, pkey) == 1) {
+        let sig_p = to_ptr(sig);
+        let data_p = to_ptr(data);
+        ok = EVP_DigestVerify(ctx, sig_p, 64, data_p, data.length) == 1;
+        free(sig_p);
+        free(data_p);
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    return ok;
+}
+
+fn json_of(part) {
+    let bytes = b64url_bytes(part);
+    if (bytes == null) { return null; }
+    return parse(from_bytes(bytes));
+}
+
+// The token's claims if `jwks` signed it, it is from Yotis Online and it has not expired;
+// otherwise null. `now_s` is seconds since the epoch.
+export fn verify_player_token(token, jwks, now_s) {
+    if (typeof(token) != "string" || jwks == null || jwks?.keys == null) { return null; }
+    try {
+        let parts = token.split(".");
+        if (parts.length != 3) { return null; }
+        let header = json_of(parts[0]);
+        if (header == null || header?.alg != "EdDSA" || header?.kid == null) { return null; }
+        let key = null;
+        let i = 0;
+        while (i < jwks.keys.length) {
+            let k = jwks.keys[i];
+            if (k?.kid == header.kid && k?.crv == "Ed25519" && k?.x != null) { key = k; }
+            i = i + 1;
+        }
+        if (key == null) { return null; }
+        let public_key = b64url_bytes(key.x);
+        let sig = b64url_bytes(parts[2]);
+        if (public_key == null || sig == null) { return null; }
+        let signed = (parts[0] + "." + parts[1]).bytes();
+        if (!ed25519_verify(public_key, signed, sig)) { return null; }
+        let claims = json_of(parts[1]);
+        if (claims == null || claims?.iss != ISSUER || typeof(claims?.sub) != "string") { return null; }
+        if (claims?.exp == null || !(claims.exp > now_s)) { return null; }
+        return claims;
+    } catch (e) {
+        return null;
+    }
+}
+
+// The scopes a token says are in force in `game_id`: its restrict claim, "scope" everywhere or
+// "scope@game" in one game.
+export fn restricted(claims, scope, game_id) {
+    let list = claims?.restrict;
+    if (list == null) { return false; }
+    let i = 0;
+    while (i < list.length) {
+        let r = list[i];
+        if (r == scope || r == scope + "@" + game_id) { return true; }
+        i = i + 1;
+    }
+    return false;
+}

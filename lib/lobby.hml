@@ -1,14 +1,23 @@
 // lobby.hml — IPC with GameRouter and server lifecycle
 //
 // Sends newline-delimited JSON events to stdout for GameRouter to consume.
-// Reads commands from stdin (reserved for future use).
+// Reads GameRouter's commands from stdin: one JSON line each, {"cmd": "...", "data": {...}}
+// (kick, mute, announce, close, reserve, jwks; src/platform.hml acts on them).
 
-import { stringify } from "@stdlib/json";
+import { stringify, parse } from "@stdlib/json";
+
+// A test's listener, called with every event as well as printing it.
+let event_sink = null;
+
+export fn set_event_sink(sink) {
+    event_sink = sink;
+}
 
 // Send an event to GameRouter via stdout
 export fn send_event(event, data) {
     let msg = stringify({ event: event, data: data });
     write(msg + "\n");
+    if (event_sink != null) { event_sink(event, data); }
 }
 
 // Read a command from GameRouter via stdin (blocking)
@@ -18,6 +27,32 @@ export fn read_command() {
     if (line == null) {
         return null;
     }
-    import { parse } from "@stdlib/json";
     return parse(line);
+}
+
+// GameRouter's commands, on a channel: a task blocks on stdin and sends each command as it
+// arrives, so the server's own loop takes them without ever waiting (select with no timeout).
+// A line that is not a command is printed and dropped. At end of input (the router has gone, or
+// the server was started without one) the task sends null once and stops.
+export fn command_channel() {
+    let ch = channel(64);
+    detach(spawn(async fn() {
+        while (true) {
+            let line = read_line();
+            if (line == null) {
+                ch.send(null);
+                return null;
+            }
+            if (line.trim() != "") {
+                try {
+                    let cmd = parse(line);
+                    if (cmd?.cmd != null) { ch.send(cmd); }
+                    else { print("router: not a command: " + line); }
+                } catch (e) {
+                    print("router: not a command: " + line);
+                }
+            }
+        }
+    }));
+    return ch;
 }

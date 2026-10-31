@@ -20,6 +20,12 @@ export fn ConnectionManager(server, game) {
         rejoin_only: false,
         on_rejoin: null,
         on_exit: null,
+        // A real-time match that takes a Quick Play player into a bot's seat (realtime take_seat).
+        on_take_seat: null,
+        // Yotis Online (src/platform.hml): who a connection is, and whether it may be seated.
+        platform: null,
+        // How the process ends; a test replaces it to watch a close without exiting.
+        exit_fn: null,
         // The password lockout's shared counter -- see LOBBY_PASSWORD in packet_handler.
         pass_fails: 0,
         pass_fail_at: 0,
@@ -70,6 +76,12 @@ export fn ConnectionManager(server, game) {
                 self.session.kick(connection, "Game isn't ready.");
                 return;
             }
+            // A public match seats only the players its platform admitted (a verified token and a
+            // Quick Play ticket, or a seat already theirs). The rest wait for GBE_AUTH.
+            if (self.platform != null && !self.platform.may_seat(connection)) { return; }
+            // Any seat a verified player owns is theirs alone: the uid matches below also need the
+            // same sub. A uid is whatever a client says it is; a sub is a signed token's.
+            let pf = self.platform;
 
             // Check for reconnection by UID.
             //
@@ -88,7 +100,8 @@ export fn ConnectionManager(server, game) {
                     // A seat no one has sat in yet has no player: a lobby of more than six
                     // (the players array's start) reaches them here first, mid-match.
                     let plr = g.get_player(i);
-                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && plr.connection == null) {
+                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && plr.connection == null
+                        && (pf == null || pf.owns(plr, connection))) {
                         conn_id = i;
                         break;
                     }
@@ -111,7 +124,8 @@ export fn ConnectionManager(server, game) {
                 while (i < g.num_bases && i < self.connections.length) {
                     let plr = g.get_player(i);
                     let old = self.connections[i];
-                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && old != null && old != connection) {
+                    if (plr != null && plr?.uid != null && plr.uid == connection.uid && old != null && old != connection
+                        && (pf == null || pf.owns(plr, connection))) {
                         self.connections[i] = null;
                         self.session.clear_connection(i);
                         plr.connection = null;
@@ -122,6 +136,17 @@ export fn ConnectionManager(server, game) {
                     }
                     i = i + 1;
                 }
+            }
+            // A verified player coming back to the seat pinned to them, whatever uid it brings.
+            if (pf != null && g.game_started && conn_id == null && connection?.sub != null) {
+                let mine = pf.slot_pinned_to(connection.sub);
+                if (mine != null && (mine >= self.connections.length || self.connections[mine] == null)) { conn_id = mine; }
+            }
+            // A Quick Play player in a public match under way takes a bot's seat.
+            let took_seat = false;
+            if (pf != null && self.rejoin_only && g.game_started && conn_id == null && pf.joinable()) {
+                conn_id = pf.bot_seat();
+                took_seat = conn_id != null;
             }
             if (self.rejoin_only && g.game_started && conn_id == null) {
                 self.session.kick(connection, "The match has started.");
@@ -344,7 +369,9 @@ export fn ConnectionManager(server, game) {
             }
 
             print("Connection opened (" + conn_id + ")");
-            if (g.game_started && self.on_rejoin != null) { self.on_rejoin(conn_id, connection); }
+            if (pf != null) { pf.seated(conn_id, connection); }
+            if (g.game_started && took_seat && self.on_take_seat != null) { self.on_take_seat(conn_id, connection); }
+            else if (g.game_started && self.on_rejoin != null) { self.on_rejoin(conn_id, connection); }
         },
 
         remove_connection: fn(connection) {
@@ -364,6 +391,7 @@ export fn ConnectionManager(server, game) {
                 return;
             }
 
+            if (self.platform != null) { self.platform.left(conn_id, connection); }
             self.connections[conn_id] = null;
             self.session.clear_connection(conn_id);
 
@@ -425,17 +453,23 @@ export fn ConnectionManager(server, game) {
             return null;
         },
 
-        kill_server: fn(code) {
+        kill_server: fn(code, message?: null) {
             // NAME THE CODE. Every path out of a lobby ends here and the client is told only
             // "Server closed.", so from the outside a host timeout, a heartbeat expiry, a
             // malformed upload and the 24-hour cap are indistinguishable -- and three of the
             // four look like a network fault to the player. The codes are: 0 malformed
-            // upload, 1 no host connected in time, 2 last connection left, 24 max lifetime.
+            // upload, 1 no host connected in time, 2 last connection left, 3 closed by the
+            // router (a moderator; `message` says why), 24 max lifetime.
             print("Killing server, code " + code);
             if (self.on_exit != null) { self.on_exit(code); }
-            self.session.kick_all("Server closed.");
+            if (message == null) { message = "Server closed."; }
+            self.session.kick_all(message);
             self.session.close();
             self.server.close();
+            if (self.exit_fn != null) {
+                self.exit_fn(code);
+                return;
+            }
             exit(code);
         },
 

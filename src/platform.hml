@@ -1,0 +1,484 @@
+// platform.hml -- Yotis Online on a session: who is playing, public matches, chat, reports, and
+// GameRouter's commands
+//
+// Platform phase P4 (yo-account-api docs/PLATFORM.md). Every part is additive: a client that never
+// sends GBE_AUTH to a lobby the router did not make public plays exactly as before.
+//
+// WHO IS PLAYING. A client sends GBE_AUTH [player token, ticket] before CLIENT_UID. The token is
+// verified here (lib/identity.hml) against the key set the router passed (ROUTER_JWKS); the
+// connection then carries its `sub`, and the seat it sits in is PINNED to that sub. A seat with a
+// sub is taken back only by a connection presenting the same sub: the uid alone, which a client
+// makes up, no longer moves anybody into somebody else's seat. The player's name is the token's,
+// so nobody can wear another player's name either. The router hears {"event":"join"} and
+// {"event":"leave"} with the sub, which is what its ban list and admin pages work from.
+//
+// PUBLIC MATCHES (ROUTER_PUBLIC=1, a Quick Play match). Nobody is seated without a verified token,
+// and a newcomer needs the ticket the router reserved for its sub; a seat pinned to the sub takes
+// it back without one. Nobody is the host: the host's powers over other players (kick, password,
+// name, start, end, seat swaps, settings) are off, and the server starts the match itself once a
+// player has been seated for public_start_ms, or at once when every seat is taken. Empty seats are
+// the game's bots. A real-time game with a take_seat hook stays joinable after the start: a
+// Quick Play player takes a bot's seat, and the router is told {"event":"joinable"}.
+//
+// CHAT goes through here: muted players (a router `mute`, or a chat ban in the token) are refused,
+// words in SHIKIKAN_CHAT_FILTER (one a line) are starred out, and the last LINES_KEPT lines are
+// kept, so a report carries what was actually said rather than what the reporter says was said.
+//
+// REPORTS: GBE_REPORT [slot, reason] from a verified player becomes {"event":"report"} with both
+// subs, the reason and the recent lines, for the router to pass to the account service.
+//
+// THE ROUTER'S COMMANDS (lib/lobby.hml command_channel), taken on the server's own loop:
+//   kick {sub, reason}  that player is put out and may not come back to this match
+//   mute {sub}          their chat is refused from now on
+//   announce {text}     every seat is sent GBE_ANNOUNCE
+//   close {reason}      everyone is told why and the process ends (code 3)
+//   reserve {ticket, sub, name, expires}   a Quick Play seat held for that sub until expires (ms)
+//   jwks {keys}         the player token key set changed
+
+import { Packet } from "Yotis-Studios/gn.hml";
+import * as id from "./id.hml";
+import { send_event, command_channel } from "../lib/lobby.hml";
+import { verify_player_token, restricted } from "../lib/identity.hml";
+import { getenv } from "@stdlib/env";
+import { parse } from "@stdlib/json";
+import { time_ms } from "@stdlib/time";
+import { open } from "@stdlib/fs";
+
+let LINES_KEPT = 50;
+let LINES_REPORTED = 30;
+let REPORTS_PER_CONNECTION = 3;
+let PUBLIC_CHAT_MAX = 200;
+
+fn env_or(name, fallback) {
+    let v = getenv(name);
+    if (v == null || v == "") { return fallback; }
+    return v;
+}
+
+// The words to star out, lower case: SHIKIKAN_CHAT_FILTER names a file with one a line.
+fn load_filter() {
+    let path = env_or("SHIKIKAN_CHAT_FILTER", "");
+    let words = [];
+    if (path == "") { return words; }
+    try {
+        let f = open(path, "r");
+        let text = f.read();
+        f.close();
+        let lines = text.split("\n");
+        let i = 0;
+        while (i < lines.length) {
+            let w = lines[i].trim().to_lower();
+            if (w != "") { words.push(w); }
+            i = i + 1;
+        }
+    } catch (e) {
+        print("platform: could not read the chat filter " + path + ": " + e);
+    }
+    return words;
+}
+
+export fn Platform(server, game, cm, opts) {
+    let jwks = null;
+    let jwks_text = env_or("ROUTER_JWKS", "");
+    if (jwks_text != "") {
+        try { jwks = parse(jwks_text); } catch (e) { print("platform: ROUTER_JWKS is not JSON"); }
+    }
+    let is_public = env_or("ROUTER_PUBLIC", "0") == "1";
+    let game_id = env_or("ROUTER_GAME", "");
+    let auth_timeout_ms = 10000;
+    let public_start_ms = number(env_or("SHIKIKAN_PUBLIC_START_S", "20")) * 1000;
+    let commands = null;
+    if (opts != null) {
+        if (opts?.jwks != null) { jwks = opts.jwks; }
+        if (opts?.public != null) { is_public = opts.public; }
+        if (opts?.game != null && game_id == "") { game_id = opts.game; }
+        if (opts?.auth_timeout_ms != null) { auth_timeout_ms = opts.auth_timeout_ms; }
+        if (opts?.public_start_ms != null) { public_start_ms = opts.public_start_ms; }
+        if (opts?.commands != null) { commands = opts.commands; }
+    }
+
+    let p = {
+        server: server,
+        game: game,
+        cm: cm,
+        rt: null,
+        public: is_public,
+        game_id: game_id,
+        match_id: env_or("ROUTER_MATCH_ID", ""),
+        jwks: jwks,
+        commands: commands,
+        commands_open: true,
+        auth_timeout_ms: auth_timeout_ms,
+        public_start_ms: public_start_ms,
+        filter: load_filter(),
+        reservations: {},   // ticket -> { sub, name, expires }
+        kicked: {},         // sub -> true: put out by the router, not let back
+        muted: {},          // sub -> true
+        lines: [],          // the recent chat: { at, slot, sub, name, text }
+        pending: [],        // public: connections not admitted yet, { connection, at }
+        first_seated_at: 0,
+        // What the router was last told. joinable_sent rather than a null joinable: comparing null
+        // with a bool in Hemlock is false both ways, so a null here would never report the first.
+        reported: { humans: -1, bots: -1, joinable: false, joinable_sent: false },
+        timer: null,
+
+        // On the server's loop once it is listening: the router's commands, the public match's
+        // clock, and what the router lists.
+        start: fn() {
+            if (self.commands == null) { self.commands = command_channel(); }
+            send_event("public", self.public);
+            let me = self;
+            self.timer = server.every(100, fn(periods, srv) { me.tick(); });
+        },
+
+        tick: fn() {
+            self.take_commands();
+            let now = time_ms();
+            if (self.public) {
+                // Connections that never showed a token (or never were admitted) go.
+                let kept = [];
+                let i = 0;
+                while (i < self.pending.length) {
+                    let e = self.pending[i];
+                    if (e.connection?.admitted == true) {
+                        // admitted: no longer waiting
+                    } else if (now - e.at >= self.auth_timeout_ms) {
+                        cm.session.kick(e.connection, "Sign in to Yotis Online to play online.");
+                    } else {
+                        kept.push(e);
+                    }
+                    i = i + 1;
+                }
+                self.pending = kept;
+                self.auto_start(now);
+            }
+            let tickets = self.reservations.keys();
+            let t = 0;
+            while (t < tickets.length) {
+                if (self.reservations[tickets[t]].expires <= now) { self.reservations.delete(tickets[t]); }
+                t = t + 1;
+            }
+            self.report_state();
+        },
+
+        take_commands: fn() {
+            if (self.commands == null || !self.commands_open) { return; }
+            let n = 0;
+            while (n < 64) {
+                let r = select([self.commands], 0);
+                if (r == null) { return; }
+                if (r.value == null) {
+                    self.commands_open = false;
+                    print("platform: the router's command channel closed");
+                    return;
+                }
+                try { self.command(r.value); } catch (e) { print("platform: command failed: " + e); }
+                n = n + 1;
+            }
+        },
+
+        command: fn(c) {
+            let d = c?.data;
+            if (c.cmd == "kick" && d?.sub != null) {
+                self.kicked[d.sub] = true;
+                self.drop_reservations(d.sub);
+                let conn = self.connection_of(d.sub);
+                let reason = d?.reason;
+                if (reason == null || reason == "") { reason = "You have been removed from this match."; }
+                if (conn != null) {
+                    print("platform: router kick of " + d.sub);
+                    cm.session.kick(conn, reason);
+                }
+            } else if (c.cmd == "mute" && d?.sub != null) {
+                self.muted[d.sub] = true;
+                let conn = self.connection_of(d.sub);
+                if (conn != null) { self.tell(conn, "You have been muted."); }
+            } else if (c.cmd == "announce" && typeof(d?.text) == "string") {
+                let pk = Packet(id.GBE_ANNOUNCE);
+                pk.add(d.text.slice(0, 200));
+                server.broadcast(pk);
+            } else if (c.cmd == "close") {
+                let reason = d?.reason;
+                if (reason == null || reason == "") { reason = "This match was closed."; }
+                print("platform: closed by the router");
+                cm.kill_server(3, reason);
+            } else if (c.cmd == "reserve" && typeof(d?.ticket) == "string" && typeof(d?.sub) == "string") {
+                let name = "";
+                if (typeof(d?.name) == "string") { name = d.name; }
+                let expires = time_ms() + 30000;
+                if (d?.expires != null) { expires = d.expires; }
+                self.reservations[d.ticket] = { sub: d.sub, name: name, expires: expires };
+            } else if (c.cmd == "jwks" && d?.keys != null) {
+                self.jwks = d;
+            } else {
+                print("platform: unknown command " + c.cmd);
+            }
+        },
+
+        drop_reservations: fn(sub) {
+            let tickets = self.reservations.keys();
+            let i = 0;
+            while (i < tickets.length) {
+                if (self.reservations[tickets[i]].sub == sub) { self.reservations.delete(tickets[i]); }
+                i = i + 1;
+            }
+        },
+
+        // The seated connection playing as `sub`, or null.
+        connection_of: fn(sub) {
+            let i = 0;
+            while (i < cm.connections.length) {
+                let c = cm.connections[i];
+                if (c != null && c?.sub == sub) { return c; }
+                i = i + 1;
+            }
+            return null;
+        },
+
+        tell: fn(connection, text) {
+            let pk = Packet(id.GBE_ANNOUNCE);
+            pk.add(text);
+            connection.send(pk);
+        },
+
+        // public: a connection waits here until GBE_AUTH admits it.
+        hold: fn(connection) {
+            self.pending.push({ connection: connection, at: time_ms() });
+        },
+
+        // Whether add_connection may seat this connection.
+        may_seat: fn(connection) {
+            return !self.public || connection?.admitted == true;
+        },
+
+        // Whether a seat may go to this connection: a pinned seat only to its own sub.
+        owns: fn(player, connection) {
+            return player?.sub == null || player.sub == connection?.sub;
+        },
+
+        // GBE_AUTH [token, ticket].
+        authenticate: fn(connection, token, ticket) {
+            if (connection?.sub != null) { return; }
+            let claims = verify_player_token(token, self.jwks, time_ms() / 1000);
+            if (claims == null) {
+                cm.session.kick(connection, "Please sign in again.");
+                return;
+            }
+            if (typeof(claims?.name) != "string" || claims.name == "") { claims.name = "Player"; }
+            let sub = claims.sub;
+            if (self.kicked.has(sub)) {
+                cm.session.kick(connection, "You were removed from this match.");
+                return;
+            }
+            if (restricted(claims, "all", self.game_id) || (self.public && restricted(claims, "public_play", self.game_id))) {
+                cm.session.kick(connection, "You cannot join public matches right now.");
+                return;
+            }
+            if (self.public) {
+                let pinned = self.slot_pinned_to(sub);
+                let held = false;
+                if (typeof(ticket) == "string" && self.reservations.has(ticket)) {
+                    let r = self.reservations[ticket];
+                    held = r.sub == sub && r.expires > time_ms();
+                    if (held) { self.reservations.delete(ticket); }
+                }
+                if (pinned == null && !held) {
+                    cm.session.kick(connection, "Use Quick Play to join this match.");
+                    return;
+                }
+                connection.admitted = true;
+            }
+            connection.sub = sub;
+            connection.claims = claims;
+            let reply = Packet(id.GBE_AUTH);
+            reply.add(sub);
+            reply.add(claims.name);
+            connection.send(reply);
+
+            let slot = cm.get_id_from_connection(connection);
+            if (slot != null) {
+                // Seated already (a private lobby seats on connect): pin the seat now.
+                let pl = game.get_player(slot);
+                if (pl != null && pl?.sub != null && pl.sub != sub) {
+                    cm.session.kick(connection, "This seat belongs to another player.");
+                    return;
+                }
+                if (pl != null) {
+                    pl.sub = sub;
+                    pl.name = claims.name;
+                    game.broadcast_names();
+                }
+                self.seated(slot, connection);
+            } else if (connection?.uid != null && game.lobby_password == "") {
+                // Its CLIENT_UID came first and could not seat it then.
+                cm.add_connection(connection);
+            }
+        },
+
+        slot_pinned_to: fn(sub) {
+            let i = 0;
+            while (i < game.num_bases) {
+                let pl = game.get_player(i);
+                if (pl != null && pl?.sub == sub) { return i; }
+                i = i + 1;
+            }
+            return null;
+        },
+
+        // A real-time public match under way takes a Quick Play player into a bot's seat.
+        joinable: fn() {
+            return self.public && game.game_started && self.rt != null && self.rt.running
+                && self.rt.hooks?.take_seat != null && self.bot_seat() != null;
+        },
+
+        // A seat no player owns and no connection holds: a bot's.
+        bot_seat: fn() {
+            let i = 0;
+            while (i < game.num_bases) {
+                let pl = game.get_player(i);
+                if (pl != null && pl.connection == null && pl?.sub == null
+                    && (i >= cm.connections.length || cm.connections[i] == null)) { return i; }
+                i = i + 1;
+            }
+            return null;
+        },
+
+        // add_connection seated `connection` in `slot`.
+        seated: fn(slot, connection) {
+            if (self.first_seated_at == 0) { self.first_seated_at = time_ms(); }
+            if (connection?.sub != null) {
+                let pl = game.get_player(slot);
+                if (pl != null) {
+                    pl.sub = connection.sub;
+                    pl.name = connection.claims.name;
+                }
+                send_event("join", { sub: connection.sub, name: connection.claims.name, slot: slot });
+            }
+            self.report_state();
+        },
+
+        // remove_connection is letting `connection` go from `slot`.
+        left: fn(slot, connection) {
+            if (connection?.sub != null) { send_event("leave", { sub: connection.sub, slot: slot }); }
+        },
+
+        humans: fn() {
+            let n = 0;
+            let i = 0;
+            while (i < game.num_bases && i < cm.connections.length) {
+                if (cm.connections[i] != null) { n = n + 1; }
+                i = i + 1;
+            }
+            return n;
+        },
+
+        // What the router lists, sent when it changes.
+        report_state: fn() {
+            let h = self.humans();
+            let b = 0;
+            if (self.public) { b = game.num_bases - h; }
+            let j = self.joinable();
+            if (h != self.reported.humans) { self.reported.humans = h; send_event("humans", h); }
+            if (b != self.reported.bots) { self.reported.bots = b; send_event("bots", b); }
+            if (!self.reported.joinable_sent || j != self.reported.joinable) {
+                self.reported.joinable = j;
+                self.reported.joinable_sent = true;
+                send_event("joinable", j);
+            }
+        },
+
+        auto_start: fn(now) {
+            if (game.game_started || self.first_seated_at == 0 || self.humans() == 0) { return; }
+            if (self.humans() >= game.num_bases || now - self.first_seated_at >= self.public_start_ms) {
+                if (cm.all_map_acked()) {
+                    print("platform: starting the public match, " + self.humans() + " of " + game.num_bases + " seats human");
+                    game.start_game();
+                }
+            }
+        },
+
+        // PLAYER_CHAT / MESSAGE text from `connection` in `slot`: what to relay, or null to drop it.
+        chat: fn(connection, slot, text) {
+            if (typeof(text) != "string") { return null; }
+            let sub = connection?.sub;
+            if (sub != null && (self.muted.has(sub) || restricted(connection.claims, "chat", self.game_id))) {
+                if (connection?.told_muted != true) {
+                    connection.told_muted = true;
+                    self.tell(connection, "You are muted.");
+                }
+                return null;
+            }
+            if (self.public && text.length > PUBLIC_CHAT_MAX) { text = text.slice(0, PUBLIC_CHAT_MAX); }
+            text = self.clean(text);
+            let name = "";
+            let pl = game.get_player(slot);
+            if (pl != null) { name = pl.name; }
+            self.lines.push({ at: time_ms(), slot: slot, sub: sub, name: name, text: text });
+            if (self.lines.length > LINES_KEPT) { self.lines.shift(); }
+            return text;
+        },
+
+        // Filtered words starred out, matched without case.
+        clean: fn(text) {
+            if (self.filter.length == 0) { return text; }
+            let lower = text.to_lower();
+            if (lower.length != text.length) { return text; }
+            let out = text;
+            let w = 0;
+            while (w < self.filter.length) {
+                let word = self.filter[w];
+                let at = lower.find(word);
+                while (at >= 0) {
+                    out = out.slice(0, at) + "*".repeat(word.length) + out.slice(at + word.length, out.length);
+                    lower = lower.slice(0, at) + "*".repeat(word.length) + lower.slice(at + word.length, lower.length);
+                    at = lower.find(word);
+                }
+                w = w + 1;
+            }
+            return out;
+        },
+
+        // GBE_REPORT [slot, reason] from `connection` in `from_slot`.
+        report: fn(connection, from_slot, target, reason) {
+            if (connection?.sub == null || from_slot == null) { return; }
+            let count = 0;
+            if (connection?.reports != null) { count = connection.reports; }
+            if (count >= REPORTS_PER_CONNECTION) { return; }
+            if (typeof(target) == "string" || typeof(target) == "null" || typeof(target) == "bool") { return; }
+            // integer(): a float index throws (connection_manager's note on 6 / 2).
+            target = integer(target);
+            if (target < 0) { return; }
+            let pl = game.get_player(target);
+            if (pl == null || target == from_slot) { return; }
+            if (typeof(reason) != "string") { reason = ""; }
+            connection.reports = count + 1;
+            let lines = [];
+            let start = self.lines.length - LINES_REPORTED;
+            if (start < 0) { start = 0; }
+            let i = start;
+            while (i < self.lines.length) {
+                let l = self.lines[i];
+                lines.push({ at: l.at, slot: l.slot, sub: l.sub, name: l.name, text: l.text });
+                i = i + 1;
+            }
+            let me_name = "";
+            let me = game.get_player(from_slot);
+            if (me != null) { me_name = me.name; }
+            send_event("report", {
+                "match": self.match_id,
+                game: self.game_id,
+                reporter: connection.sub,
+                reporter_name: me_name,
+                reported: pl?.sub,
+                reported_name: pl.name,
+                slot: target,
+                reason: reason.slice(0, 200),
+                lines: lines,
+            });
+            let ack = Packet(id.GBE_REPORT);
+            ack.add(1);
+            connection.send(ack);
+        },
+    };
+    return p;
+}

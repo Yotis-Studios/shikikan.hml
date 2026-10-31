@@ -137,3 +137,13 @@ export let GBE_SEAT_DATA = 174;
 // relays it to the other seats, replays it to joiners, and hands a real-time match it at its start
 // (new_match_with's settings.data).
 export let GBE_LOBBY_DATA = 175;
+
+// Yotis Online (platform P4, src/platform.hml). The engine sends GBE_AUTH before CLIENT_UID.
+//   AUTH      client to server: player token, Quick Play ticket ("" for none)
+//             server to client: sub, name -- the identity the seat is now pinned to
+//   ANNOUNCE  server to client: a line of text from the server or a moderator (also "You are muted.")
+//   REPORT    client to server: the reported seat's slot, a reason (at most 200 characters)
+//             server to client: 1, the report was taken
+export let GBE_AUTH = 176;
+export let GBE_ANNOUNCE = 177;
+export let GBE_REPORT = 178;

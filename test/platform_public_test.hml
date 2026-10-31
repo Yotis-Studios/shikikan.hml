@@ -1,0 +1,145 @@
+// platform_public_test.hml -- a public (Quick Play) match, headless (src/platform.hml)
+//
+// The real session on a fixed port with opts.public, three seats and a real-time toy that has a
+// take_seat hook. Checks: nobody sits down without a verified token, a ticket the router reserved
+// for that sub, and no public-play ban; a connection that never authenticates is put out; the
+// first player gets no host powers; the match starts itself; the router hears humans, bots and
+// joinable; a Quick Play player takes a bot's seat mid-match; and a dropped player comes back to
+// their own seat without a ticket.
+//
+//   hemlock test/platform_public_test.hml
+
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import * as fx from "./fixtures.hml";
+import { Events, connect, send, wait_for, kick_reason, is_closed, until, wait, disconnect } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep, time_ms } from "@stdlib/time";
+
+let PORT = 41971;
+let START_MS = 2500;
+
+let events = Events();
+let took = channel(8);
+let toy = {
+    new_match: fn(seed, seats) { return { tick: 0 }; },
+    intent: fn(m, slot, values) { },
+    step: fn(m) { m.tick = m.tick + 1; },
+    snapshot: fn(m, slot) { return [m.tick]; },
+    over: fn(m) { return false; },
+    fingerprint: fn(m) { return "t" + m.tick; },
+    take_seat: fn(m, slot, player) { took.send({ slot: slot, sub: player.sub, name: player.name }); },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+let commands = channel(16);
+let ctx = { v: null };
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 3, jwks: fx.JWKS, commands: commands,
+        public: true, public_start_ms: START_MS, auth_timeout_ms: 800, public_lobby_data: "mode=dogfight",
+        on_start: fn(c) { ctx.v = c; } });
+});
+sleep(0.5);
+
+fn kicked(s) { return kick_reason(s, id.PLAYER_KICK, 2000); }
+fn reserve(ticket, sub, ms) {
+    commands.send({ cmd: "reserve", data: { ticket: ticket, sub: sub, name: "", expires: time_ms() + ms } });
+    wait(0.25);
+}
+// The Quick Play client: GBE_AUTH with the token and ticket, CLIENT_UID, then the roster entry.
+fn join(token, ticket, uid) {
+    let s = connect(PORT);
+    send(s, id.GBE_AUTH, [token, ticket]);
+    send(s, id.CLIENT_UID, [uid]);
+    let init = wait_for(s, id.CLIENT_INIT, 2000);
+    if (init != null) {
+        s.slot = init.get(0);
+        send(s, id.PLAYER_ADD, [[0, 0, s.slot, 0]]);
+    }
+    return s;
+}
+fn last_is(name, value) {
+    let e = events.last(name);
+    return e != null && e.data == value;
+}
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+print("platform (public match):");
+check(last_is("public", true), "the router is told the match is public");
+check(ctx.v.game.lobby_data == "mode=dogfight", "it plays with the settings it was given, having no host to choose them");
+
+let silent = connect(PORT);
+send(silent, id.CLIENT_UID, ["uid-silent"]);
+check(wait_for(silent, id.CLIENT_INIT, 500) == null, "a connection without a token is not seated");
+check(kicked(silent) == "Sign in to Yotis Online to play online.", "and is put out when it never authenticates");
+
+let no_ticket = join(fx.G1, "", "uid-x");
+check(no_ticket.slot == null && kicked(no_ticket) == "Use Quick Play to join this match.", "a verified player without a ticket is refused");
+
+reserve("t-banned", "g:4", 30000);
+let banned = join(fx.NO_PUBLIC, "t-banned", "uid-banned");
+check(banned.slot == null && kicked(banned) == "You cannot join public matches right now.", "a token with a public_play ban for this game is refused");
+
+reserve("t-stale", "g:1", 50);
+wait(0.2);
+let stale = join(fx.G1, "t-stale", "uid-stale");
+check(stale.slot == null && kicked(stale) == "Use Quick Play to join this match.", "an expired ticket is refused");
+
+reserve("t-wrong", "g:2", 30000);
+let wrong = join(fx.G1, "t-wrong", "uid-wrong");
+check(wrong.slot == null, "a ticket held for someone else is refused");
+
+reserve("t-a", "g:1", 30000);
+let t0 = time_ms();
+let a = join(fx.G1, "t-a", "uid-a");
+let auth = wait_for(a, id.GBE_AUTH, 1000);
+check(a.slot == 0 && auth != null && auth.get(0) == "g:1", "g:1 sits down on its ticket");
+reserve("t-b", "g:2", 30000);
+let b = join(fx.G2, "t-b", "uid-b");
+check(b.slot == 1, "g:2 too (" + b.slot + ")");
+check(until(fn() { return last_is("humans", 2); }, 1000) && last_is("bots", 1), "the router hears two humans and one bot");
+
+// The first player is not a host: no kicking, no starting.
+send(a, id.PLAYER_KICK, [1]);
+send(a, id.GAME_START, []);
+wait(0.4);
+check(!is_closed(b) && !ctx.v.game.game_started, "the first player cannot kick anyone or start the match");
+
+check(wait_for(a, id.GBE_RT_START, START_MS + 2000) != null, "the match starts itself");
+let waited = time_ms() - t0;
+check(waited >= START_MS - 300, "after its start delay (" + waited + " ms)");
+check(until(fn() { return last_is("joinable", true); }, 1000), "the router hears it is joinable: a bot's seat is free");
+
+reserve("t-c", "g:3", 30000);
+let c = join(fx.G3, "t-c", "uid-c");
+check(c.slot == 2 && wait_for(c, id.GBE_RT_START, 2000) != null, "a Quick Play player takes the bot's seat mid-match (" + c.slot + ")");
+let t = select([took], 1000);
+check(t != null && t.value.slot == 2 && t.value.sub == "g:3" && t.value.name == "Cat", "the game's take_seat hook hears it");
+check(until(fn() { return last_is("joinable", false); }, 1000) && last_is("humans", 3) && last_is("bots", 0),
+    "and the router hears three humans, no bots, not joinable");
+
+reserve("t-d", "u:7", 30000);
+let full = join(fx.U7, "t-d", "uid-d");
+check(full.slot == null && kicked(full) == "The match has started.", "with no bot left, a newcomer is turned away");
+
+disconnect(b);
+check(until(fn() { return events.find("leave", "g:2") != null; }, 2000), "g:2 drops");
+let b2 = join(fx.G2, "", "uid-b-new");
+check(b2.slot == 1 && wait_for(b2, id.GBE_RT_START, 2000) != null, "and comes back to its own seat without a ticket");
+
+let exited = channel(1);
+ctx.v.cm.exit_fn = fn(code) { exited.send(code); };
+commands.send({ cmd: "close", data: { reason: "Closed." } });
+let code = select([exited], 2000);
+check(code != null && code.value == 3, "the router can close it");
+
+print("");
+print("Platform Public Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "platform public test failed"; }
+exit(0);

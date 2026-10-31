@@ -1,0 +1,177 @@
+// harness.hml -- gn clients and router events for the platform tests, safely across threads
+//
+// THE SERVER RUNS IN ITS OWN TASK. Arrays and objects are not safe to share between tasks: a task
+// pushing onto an array while the main thread walks it reallocates the array under the walk, and
+// a task reading a client while the main thread disconnects it races on the client itself. Both
+// segfaulted platform_public_test some of the time (one run in three). So the server's events
+// come over a channel, and no task here touches a client at all: the main thread takes each
+// client's events straight off the channel gn's own receive task fills (what recv_packet reads),
+// and parses them itself. Every client is pumped whenever the test waits, so none of those
+// channels fills and stalls gn's receive task.
+
+import { Client, Packet } from "Yotis-Studios/gn.hml";
+// A package import names only the package's main module, so gn's parser comes by path.
+import { parse_packets } from "../hem_modules/Yotis-Studios/gn.hml/src/network/packet.hml";
+import { set_event_sink } from "../lib/lobby.hml";
+import { sleep, time_ms } from "@stdlib/time";
+
+let clients = [];
+
+// Take everything every client has been sent so far.
+export fn pump() {
+    let i = 0;
+    while (i < clients.length) {
+        drain(clients[i]);
+        i = i + 1;
+    }
+}
+
+// Router events, as the main thread sees them: call events.all() to drain and read.
+export fn Events() {
+    let ch = channel(4096);
+    set_event_sink(fn(event, data) { ch.send({ event: event, data: data }); });
+    return {
+        ch: ch,
+        list: [],
+        all: fn() {
+            while (true) {
+                let r = select([self.ch], 0);
+                if (r == null || r.value == null) { break; }
+                self.list.push(r.value);
+            }
+            return self.list;
+        },
+        find: fn(name, sub) {
+            let l = self.all();
+            let i = 0;
+            while (i < l.length) {
+                if (l[i].event == name && (sub == null || l[i].data?.sub == sub)) { return l[i]; }
+                i = i + 1;
+            }
+            return null;
+        },
+        last: fn(name) {
+            let l = self.all();
+            let i = l.length - 1;
+            while (i >= 0) {
+                if (l[i].event == name) { return l[i]; }
+                i = i - 1;
+            }
+            return null;
+        },
+        count: fn(name, sub) {
+            let l = self.all();
+            let n = 0;
+            let i = 0;
+            while (i < l.length) {
+                if (l[i].event == name && (sub == null || l[i].data?.sub == sub)) { n = n + 1; }
+                i = i + 1;
+            }
+            return n;
+        },
+    };
+}
+
+export fn connect(port) {
+    let c = Client();
+    c.connect("127.0.0.1", port);
+    let s = { c: c, got: [], closed: false, slot: null };
+    clients.push(s);
+    return s;
+}
+
+// The client's events so far, into s.got (packets) and s.closed.
+export fn drain(s) {
+    if (s.closed || s.c._event_ch == null) { return; }
+    while (true) {
+        let r = select([s.c._event_ch], 0);
+        if (r == null) { return; }
+        let ev = r.value;
+        if (ev == null || ev.type == "disconnect") {
+            s.closed = true;
+            return;
+        }
+        if (ev.type == "data") {
+            let packets = parse_packets(ev.binary);
+            let i = 0;
+            while (i < packets.length) {
+                s.got.push(packets[i]);
+                i = i + 1;
+            }
+        }
+    }
+}
+
+// Close it from this side (a dropped player).
+export fn disconnect(s) {
+    s.c.disconnect();
+    s.closed = true;
+}
+
+export fn send(s, net_id, values) {
+    let p = Packet(net_id);
+    let i = 0;
+    while (i < values.length) {
+        p.add(values[i]);
+        i = i + 1;
+    }
+    s.c.send(p);
+}
+
+export fn wait_for(s, net_id, ms) {
+    let end = time_ms() + ms;
+    while (true) {
+        pump();
+        let i = 0;
+        while (i < s.got.length) {
+            if (s.got[i].net_id == net_id) { return s.got[i]; }
+            i = i + 1;
+        }
+        if (s.closed || time_ms() >= end) { return null; }
+        sleep(0.02);
+    }
+}
+
+export fn all_of(s, net_id) {
+    drain(s);
+    let out = [];
+    let i = 0;
+    while (i < s.got.length) {
+        if (s.got[i].net_id == net_id) { out.push(s.got[i]); }
+        i = i + 1;
+    }
+    return out;
+}
+
+export fn is_closed(s) {
+    drain(s);
+    return s.closed;
+}
+
+export fn kick_reason(s, kick_id, ms) {
+    let k = wait_for(s, kick_id, ms);
+    if (k == null) {
+        if (s.closed) { return "closed"; }
+        return "none";
+    }
+    return k.get(0);
+}
+
+export fn until(cond, ms) {
+    let end = time_ms() + ms;
+    while (time_ms() < end) {
+        pump();
+        if (cond()) { return true; }
+        sleep(0.02);
+    }
+    return false;
+}
+
+// sleep(), keeping every client pumped.
+export fn wait(seconds) {
+    let end = time_ms() + seconds * 1000;
+    while (time_ms() < end) {
+        pump();
+        sleep(0.02);
+    }
+}

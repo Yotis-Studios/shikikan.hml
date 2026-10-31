@@ -22,6 +22,9 @@
 //   leave(match, slot)            optional: a seat's connection went away mid-match
 //   rejoin(match, slot)           optional: that seat is back (the same uid), and has been sent
 //                                 GBE_RT_START at the current tick
+//   take_seat(match, slot, player) optional: a Quick Play player takes over a bot's seat in a public
+//                                 match under way (src/platform.hml); player is { name, sub }.
+//                                 Without it a public match is not joinable once it has started
 //   summary(match)                optional: an object of the game's own, for the match log
 //
 // REJOINING. The session puts a returning uid back in its slot (connection_manager); once the
@@ -265,6 +268,29 @@ export fn Realtime(server, game, cm, hooks, opts) {
             connection.send(p);
             if (self.hooks?.rejoin != null) { self.hooks.rejoin(self.state, slot); }
             print("realtime: seat " + slot + " rejoined at tick " + self.tick);
+        },
+
+        // A player taking over a bot's seat: the match from now, as for a rejoin, and the game is
+        // told the seat is human now.
+        take_seat: fn(slot, connection) {
+            if (!self.running || slot == null || slot >= self.seats) { return; }
+            self.received[slot] = -1;
+            self.acked[slot] = -1;
+            self.queue[slot] = [];
+            let name = "";
+            let pl = game.get_player(slot);
+            if (pl != null) { name = pl.name; }
+            self.roster[slot] = { name: name, human: true };
+            let p = Packet(id.GBE_RT_START);
+            p.add(game.seed);
+            p.add(self.tick_hz);
+            p.add(self.send_hz);
+            p.add(self.tick);
+            p.add(slot);
+            p.add(self.seats);
+            connection.send(p);
+            if (self.hooks?.take_seat != null) { self.hooks.take_seat(self.state, slot, { name: name, sub: connection?.sub }); }
+            print("realtime: seat " + slot + " taken from a bot at tick " + self.tick);
         },
 
         // One line in the match log (above). Once a match: the first way it ends is the one kept.

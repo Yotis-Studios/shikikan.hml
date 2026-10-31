@@ -1,0 +1,151 @@
+// platform_test.hml -- Yotis Online in a private lobby, headless (src/platform.hml)
+//
+// gn clients through the real session on a fixed port, with player tokens from test/fixtures.hml
+// and router commands on a channel. Checks: GBE_AUTH pins a seat and tells the router who joined;
+// the token's name wins over the client's; a bad token is put out; chat is relayed, filtered,
+// remembered and refused once muted; a report carries the recent lines; announce and kick from the
+// router; a kicked player cannot come back; and once the match has started a seat pinned to a
+// player is taken back by that player only -- not by somebody presenting the same uid.
+//
+//   hemlock test/platform_test.hml
+
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import * as fx from "./fixtures.hml";
+import { Events, connect, send, wait_for, all_of, kick_reason, until, wait, disconnect } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep } from "@stdlib/time";
+import { open } from "@stdlib/fs";
+
+let PORT = 41961;
+let FILTER = "/tmp/shikikan_platform_filter.txt";
+
+let events = Events();
+
+let toy = {
+    new_match: fn(seed, seats) { return { tick: 0, n: seats.length }; },
+    intent: fn(m, slot, values) { },
+    step: fn(m) { m.tick = m.tick + 1; },
+    snapshot: fn(m, slot) { return [m.tick]; },
+    over: fn(m) { return false; },
+    fingerprint: fn(m) { return "t" + m.tick; },
+};
+
+let f = open(FILTER, "w");
+f.write("badword\n\n");
+f.close();
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+setenv("SHIKIKAN_CHAT_FILTER", FILTER);
+let commands = channel(16);
+let ctx = { v: null };
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 4, jwks: fx.JWKS, commands: commands,
+        on_start: fn(c) { ctx.v = c; } });
+});
+sleep(0.5);
+
+fn kicked(s) { return kick_reason(s, id.PLAYER_KICK, 2000); }
+// Seated as the engine does it: GBE_AUTH (token, no ticket), CLIENT_UID, then the roster entry.
+fn seat(token, uid) {
+    let s = connect(PORT);
+    if (token != null) { send(s, id.GBE_AUTH, [token, ""]); }
+    send(s, id.CLIENT_UID, [uid]);
+    let init = wait_for(s, id.CLIENT_INIT, 2000);
+    if (init != null) {
+        s.slot = init.get(0);
+        send(s, id.PLAYER_ADD, [[0, 0, s.slot, 0]]);
+    }
+    return s;
+}
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+print("platform (private lobby):");
+
+let a = seat(fx.G1, "uid-a");
+let auth = wait_for(a, id.GBE_AUTH, 2000);
+check(a.slot == 0 && auth != null && auth.get(0) == "g:1" && auth.get(1) == "Ace", "GBE_AUTH is answered with the verified sub and name");
+check(until(fn() { return events.find("join", "g:1") != null; }, 2000) && events.find("join", "g:1").data.name == "Ace", "the router hears who joined");
+check(ctx.v.game.get_player(0).sub == "g:1", "the seat is pinned to g:1");
+send(a, id.PLAYER_NAME, ["Mallory"]);
+wait(0.3);
+check(ctx.v.game.get_player(0).name == "Ace", "the token's name wins over the client's");
+
+let b = seat(fx.G2, "uid-b");
+let d = seat(fx.U7, "uid-d");
+check(b.slot == 1 && d.slot == 2, "two more verified players sit down (" + b.slot + ", " + d.slot + ")");
+
+let bad = connect(PORT);
+send(bad, id.GBE_AUTH, [fx.FOREIGN_KEY, ""]);
+check(kicked(bad) == "Please sign in again.", "a token from another key is put out");
+
+// Chat: relayed with the filter applied, remembered for reports.
+send(b, id.PLAYER_CHAT, [0, "hello there"]);
+send(b, id.PLAYER_CHAT, [0, "what a BadWord move"]);
+check(until(fn() { return all_of(a, id.PLAYER_CHAT).length >= 2; }, 2000), "chat is relayed");
+let chats = all_of(a, id.PLAYER_CHAT);
+check(chats.length >= 2 && chats[0].get(2) == "hello there" && chats[1].get(2) == "what a ******* move", "filtered words are starred out");
+
+// A report: the server attaches what was said.
+send(a, id.GBE_REPORT, [1, "rude"]);
+check(wait_for(a, id.GBE_REPORT, 2000) != null, "the reporter is told the report was taken");
+let rep = events.find("report", null);
+check(rep != null && rep.data.reporter == "g:1" && rep.data.reported == "g:2" && rep.data.reported_name == "Bee" && rep.data.reason == "rude" && rep.data.game == "toy",
+    "the router hears the report with both players");
+check(rep != null && rep.data.lines.length == 2 && rep.data.lines[1].sub == "g:2" && rep.data.lines[1].text == "what a ******* move", "and the lines actually said");
+send(a, id.GBE_REPORT, [0, "myself"]);
+send(a, id.GBE_REPORT, [9, "nobody"]);
+wait(0.3);
+check(events.count("report", null) == 1, "reporting yourself or an empty seat does nothing");
+
+// The router mutes g:2: told once, chat refused.
+commands.send({ cmd: "mute", data: { sub: "g:2" } });
+let told = wait_for(b, id.GBE_ANNOUNCE, 2000);
+check(told != null && told.get(0) == "You have been muted.", "a muted player is told");
+let before = all_of(a, id.PLAYER_CHAT).length;
+send(b, id.PLAYER_CHAT, [0, "can you hear me"]);
+wait(0.4);
+check(all_of(a, id.PLAYER_CHAT).length == before, "and their chat is not relayed");
+
+commands.send({ cmd: "announce", data: { text: "Server restarts soon" } });
+let ann = wait_for(d, id.GBE_ANNOUNCE, 2000);
+check(ann != null && ann.get(0) == "Server restarts soon", "announce reaches every seat");
+
+// The router kicks g:2: put out with the reason, the router hears the leave, no way back in.
+commands.send({ cmd: "kick", data: { sub: "g:2", reason: "Banned for spam." } });
+check(kicked(b) == "Banned for spam.", "a router kick puts the player out with its reason");
+check(until(fn() { return events.find("leave", "g:2") != null; }, 2000), "the router hears them leave");
+let b_again = connect(PORT);
+send(b_again, id.GBE_AUTH, [fx.G2, ""]);
+check(kicked(b_again) == "You were removed from this match.", "a kicked player cannot come back to this match");
+
+// Start the match, then a's connection goes. Its seat stays pinned to g:1.
+send(a, id.GAME_START, []);
+check(wait_for(d, id.GBE_RT_START, 3000) != null, "the match starts");
+disconnect(a);
+check(until(fn() { return events.find("leave", "g:1") != null; }, 2000), "a's leave is heard");
+
+let thief = seat(fx.G3, "uid-a");
+check(thief.slot == null && kicked(thief) == "The match has started.", "somebody else with a's uid does not get a's seat");
+let anon = seat(null, "uid-a");
+check(anon.slot == null, "nor does a client with a's uid and no token");
+let a2 = seat(fx.G1, "uid-other");
+check(a2.slot == 0 && wait_for(a2, id.GBE_RT_START, 2000) != null, "g:1 takes its seat back, whatever uid it brings (" + a2.slot + ")");
+check(events.count("join", "g:1") == 2, "and the router hears g:1 join again");
+
+// The router closes the match: everyone told why, the process would exit with 3.
+let exited = channel(1);
+ctx.v.cm.exit_fn = fn(code) { exited.send(code); };
+commands.send({ cmd: "close", data: { reason: "Closed by a moderator." } });
+let code = select([exited], 2000);
+check(kicked(d) == "Closed by a moderator." && code != null && code.value == 3, "close tells everyone why and ends with code 3");
+
+print("");
+print("Platform Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "platform test failed"; }
+exit(0);

@@ -224,6 +224,10 @@ export fn Game(server) {
             self.init_new_player(i);
         }
         self.players[i].connection = connection;
+        // The seat belongs to whoever sits in it now: a verified player, or nobody in particular.
+        // A seat left by a pinned player is only re-seated with that player (add_connection), and
+        // a lobby seat someone else takes must not keep the previous player's sub.
+        self.players[i].sub = connection?.sub;
         self.update_player_count();
         self.players[i].ready = (i == self.host);
     };

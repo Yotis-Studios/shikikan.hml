@@ -13,6 +13,17 @@
 //   opts.match_log  a real-time match appends one JSON line here when it ends (lib/realtime.hml);
 //                   SHIKIKAN_MATCH_LOG overrides it, and neither set means no log
 //   opts.game       the game's id, written in each line of the match log
+//
+// Yotis Online (src/platform.hml). GameRouter sets these through the environment; tests pass them:
+//   opts.public            a Quick Play match (ROUTER_PUBLIC=1)
+//   opts.jwks              the player token key set (ROUTER_JWKS)
+//   opts.public_start_ms   a public match starts this long after its first player sits down
+//                          (SHIKIKAN_PUBLIC_START_S, default 20 s), or once every seat is taken
+//   opts.public_lobby_data the settings string a public match plays with, since it has no host to
+//                          choose (SHIKIKAN_PUBLIC_LOBBY_DATA)
+//   opts.auth_timeout_ms   how long a public match waits for a connection's GBE_AUTH (10 s)
+//   opts.commands          a channel of router commands, instead of reading them from stdin (tests)
+//   opts.on_start          called with { game, cm, platform } once listening (tests)
 
 import { Server, Packet } from "Yotis-Studios/gn.hml";
 import { send_event } from "../lib/lobby.hml";
@@ -24,6 +35,7 @@ import { randint } from "@stdlib/random";
 import { getenv } from "@stdlib/env";
 import { fuzz_config, fuzz_wrap } from "./fuzz.hml";
 import { Realtime } from "../lib/realtime.hml";
+import { Platform } from "./platform.hml";
 
 export fn start_server(opts) {
     // A NARROW, KNOWN RANGE -- because nginx has to name it.
@@ -77,10 +89,23 @@ export fn start_server(opts) {
         cm.rejoin_only = true;
         cm.on_rejoin = fn(slot, connection) { rt.rejoin(slot, connection); };
         cm.on_exit = fn(code) { rt.closed(code); };
+        cm.on_take_seat = fn(slot, connection) { rt.take_seat(slot, connection); };
+    }
+
+    // Yotis Online: verified players, public matches, chat, reports, the router's commands.
+    let platform = Platform(server, game, cm, opts);
+    platform.rt = rt;
+    cm.platform = platform;
+    if (platform.public) {
+        let ld = getenv("SHIKIKAN_PUBLIC_LOBBY_DATA");
+        if (opts != null && opts?.public_lobby_data != null) { ld = opts.public_lobby_data; }
+        if (ld != null) { game.lobby_data = ld; }
     }
 
     server.on("ready", fn() {
         send_event("port", server._port);
+        platform.start();
+        if (opts != null && opts?.on_start != null) { opts.on_start({ game: game, cm: cm, platform: platform }); }
     });
 
     // Deliberate mistiming, off unless FUZZ_DELAY_MS and FUZZ_PERCENT are both set. Read once at
@@ -95,6 +120,11 @@ export fn start_server(opts) {
         // Wrapped before anything else can send to it, so no packet escapes untouched -- including
         // the ones add_connection itself sends while setting the lobby up.
         fuzz_wrap(connection, fuzz);
+        // A public match seats nobody until their GBE_AUTH admits them.
+        if (platform.public) {
+            platform.hold(connection);
+            return;
+        }
         if (game.lobby_password == "") {
             if (!game.game_started) {
                 cm.add_connection(connection);

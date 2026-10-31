@@ -1,0 +1,45 @@
+// identity_test.hml -- player tokens verified by lib/identity.hml against test/fixtures.hml
+//
+//   hemlock test/identity_test.hml
+
+import { verify_player_token, restricted, b64url_bytes } from "../lib/identity.hml";
+import * as fx from "./fixtures.hml";
+import { exit } from "@stdlib/env";
+
+let NOW = 1790000100;
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+
+print("identity:");
+let b = b64url_bytes("AQID_-8");
+check(b != null && b.length == 5 && b[0] == 1 && b[1] == 2 && b[2] == 3 && b[3] == 255 && b[4] == 239, "base64url decodes (" + b + ")");
+check(b64url_bytes("a+b") == null, "and refuses what is not base64url");
+
+let g1 = verify_player_token(fx.G1, fx.JWKS, NOW);
+check(g1 != null && g1.sub == "g:1" && g1.name == "Ace" && g1.kind == "guest", "a valid token gives its claims");
+let u7 = verify_player_token("" + fx.U7, fx.JWKS, NOW);
+check(u7 != null && u7.sub == "u:7", "an account's token too");
+check(verify_player_token(fx.TAMPERED, fx.JWKS, NOW) == null, "a payload under someone else's signature is refused");
+check(verify_player_token(fx.FOREIGN_KEY, fx.JWKS, NOW) == null, "a token signed by another key is refused");
+check(verify_player_token(fx.EXPIRED, fx.JWKS, NOW) == null, "an expired token is refused");
+check(verify_player_token(fx.OTHER_ISSUER, fx.JWKS, NOW) == null, "another issuer's token is refused");
+check(verify_player_token(fx.ALG_NONE, fx.JWKS, NOW) == null, "alg none is refused");
+check(verify_player_token("garbage", fx.JWKS, NOW) == null && verify_player_token(null, fx.JWKS, NOW) == null && verify_player_token(fx.G1, null, NOW) == null,
+    "junk, null and no key set are refused");
+check(verify_player_token(fx.G1, { keys: [] }, NOW) == null, "a key set without the token's key refuses it");
+
+let np = verify_player_token(fx.NO_PUBLIC, fx.JWKS, NOW);
+check(np != null && restricted(np, "public_play", "toy") && !restricted(np, "public_play", "other") && !restricted(np, "chat", "toy"),
+    "restrict: a game's public_play ban reaches that game only");
+let nc = verify_player_token(fx.NO_CHAT, fx.JWKS, NOW);
+check(nc != null && restricted(nc, "chat", "anything") && !restricted(g1, "chat", "toy"), "restrict: a chat ban reaches every game");
+
+print("");
+print("Identity Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "identity test failed"; }
+exit(0);

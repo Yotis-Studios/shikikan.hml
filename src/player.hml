@@ -24,6 +24,9 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
         server: server,
         connection: connection,
         uid: null,
+        // The Yotis Online player this seat belongs to (a verified token's sub, src/platform.hml),
+        // or null. A seat with a sub is taken back only by that sub.
+        sub: null,
         eye_color: null,
         hair_color: null,
         uniform_color: null,
