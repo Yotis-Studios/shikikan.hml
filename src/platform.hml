@@ -123,6 +123,7 @@ export fn Platform(server, game, cm, opts) {
         // with a bool in Hemlock is false both ways, so a null here would never report the first.
         reported: { humans: -1, bots: -1, joinable: false, joinable_sent: false },
         timer: null,
+        close_timer: null,
 
         // On the server's loop once it is listening: the router's commands, the public match's
         // clock, and what the router lists.
@@ -218,7 +219,17 @@ export fn Platform(server, game, cm, opts) {
                 let reason = d?.reason;
                 if (reason == null || reason == "") { reason = "This match was closed."; }
                 print("platform: closed by the router");
-                cm.kill_server(3, reason);
+                // The reason goes out now and the process ends half a second later, on the
+                // server's own loop: ending it at once dropped the reason before it was sent
+                // (seen on staging; a test that replaces the exit cannot show it).
+                cm.session.kick_all(reason);
+                if (self.close_timer == null) {
+                    let me = self;
+                    self.close_timer = server.every(500, fn(periods, srv) {
+                        server.cancel(me.close_timer);
+                        cm.kill_server(3, reason);
+                    });
+                }
             } else if (c.cmd == "reserve" && typeof(d?.ticket) == "string" && typeof(d?.sub) == "string") {
                 let name = "";
                 if (typeof(d?.name) == "string") { name = d.name; }
