@@ -37,7 +37,7 @@ let ctx = { v: null };
 spawn(async fn() {
     start_server({ realtime: toy, port: PORT, game: "toy", seats: 4, jwks: fx.JWKS, commands: commands,
         public: true, public_start_ms: START_MS, auth_timeout_ms: 800, public_lobby_data: "mode=dogfight",
-        on_start: fn(c) { ctx.v = c; } });
+        public_mode: "2, 2", on_start: fn(c) { ctx.v = c; } });
 });
 sleep(0.5);
 
@@ -73,6 +73,7 @@ fn check(ok, what) {
 print("platform (public match):");
 check(last_is("public", true), "the router is told the match is public");
 check(ctx.v.game.lobby_data == "mode=dogfight", "it plays with the settings it was given, having no host to choose them");
+check(ctx.v.game.game_mode == 2, "and the mode it was given (" + ctx.v.game.game_mode + ")");
 
 let silent = connect(PORT);
 send(silent, id.CLIENT_UID, ["uid-silent"]);

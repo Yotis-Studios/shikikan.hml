@@ -111,7 +111,8 @@ either the ticket GameRouter reserved for their sub or a seat already theirs; a 
 does not authenticate within 10 s is put out, and so is a token carrying a public-play ban. There is
 no host: kick, password, name, settings, start and end are off, and the server starts the match
 `SHIKIKAN_PUBLIC_START_S` (20) seconds after its first player sits down, or once every seat is
-taken, with `SHIKIKAN_PUBLIC_LOBBY_DATA` as its settings. Empty seats are the game's bots. A
+taken, with `SHIKIKAN_PUBLIC_LOBBY_DATA` as its settings and `SHIKIKAN_PUBLIC_MODE` as its
+mode (a GAME_MODE number, or several joined with `,` for each match to play one at random). Empty seats are the game's bots. A
 real-time game with a `take_seat(match, slot, { name, sub })` hook stays joinable after the start:
 a Quick Play player takes a bot's seat. GameRouter hears `public`, `humans`, `bots` and `joinable`.
 

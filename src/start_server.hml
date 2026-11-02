@@ -23,6 +23,8 @@
 //                          rejoin (SHIKIKAN_PUBLIC_EMPTY_S, default 120 s; 0 ends it at once)
 //   opts.public_lobby_data the settings string a public match plays with, since it has no host to
 //                          choose (SHIKIKAN_PUBLIC_LOBBY_DATA)
+//   opts.public_mode       the GAME_MODE a public match plays, or several joined with "," for each
+//                          match to play one of them, picked at random (SHIKIKAN_PUBLIC_MODE)
 //   opts.auth_timeout_ms   how long a public match waits for a connection's GBE_AUTH (10 s)
 //   opts.commands          a channel of router commands, instead of reading them from stdin (tests)
 //   opts.on_start          called with { game, cm, platform } once listening (tests)
@@ -102,6 +104,13 @@ export fn start_server(opts) {
         let ld = getenv("SHIKIKAN_PUBLIC_LOBBY_DATA");
         if (opts != null && opts?.public_lobby_data != null) { ld = opts.public_lobby_data; }
         if (ld != null) { game.lobby_data = ld; }
+        let pm = getenv("SHIKIKAN_PUBLIC_MODE");
+        if (opts != null && opts?.public_mode != null) { pm = "" + opts.public_mode; }
+        if (pm != null && pm != "") {
+            let modes = pm.split(",");
+            // Set directly, not through set_game_mode: a Raifu Wars rule there would change the teams.
+            game.game_mode = integer(number(modes[randint(0, modes.length - 1)].trim()));
+        }
     }
 
     server.on("ready", fn() {
