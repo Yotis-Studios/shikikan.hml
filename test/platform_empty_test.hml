@@ -1,0 +1,86 @@
+// platform_empty_test.hml -- a public match under way outlasts its last player (src/platform.hml outlast)
+//
+// The real session on a fixed port with opts.public and a short public_empty_ms. Checks: the only
+// player dropping does not end the match; coming back inside the grace keeps it going past the
+// first deadline; leaving again ends it once the grace runs out, with the last-connection code.
+//
+//   hemlock test/platform_empty_test.hml
+
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import * as fx from "./fixtures.hml";
+import { connect, send, wait_for, until, wait, disconnect } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep, time_ms } from "@stdlib/time";
+
+let PORT = 41972;
+let EMPTY_MS = 1500;
+
+let toy = {
+    new_match: fn(seed, seats) { return { tick: 0 }; },
+    intent: fn(m, slot, values) { },
+    step: fn(m) { m.tick = m.tick + 1; },
+    snapshot: fn(m, slot) { return [m.tick]; },
+    over: fn(m) { return false; },
+    fingerprint: fn(m) { return "t" + m.tick; },
+    take_seat: fn(m, slot, player) { },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+let commands = channel(16);
+let exited = channel(1);
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 2, jwks: fx.JWKS, commands: commands,
+        public: true, public_start_ms: 600, public_empty_ms: EMPTY_MS, auth_timeout_ms: 800,
+        public_lobby_data: "mode=dogfight",
+        on_start: fn(c) { c.cm.exit_fn = fn(code) { exited.send(code); }; } });
+});
+sleep(0.5);
+
+fn join(token, ticket, uid) {
+    let s = connect(PORT);
+    send(s, id.GBE_AUTH, [token, ticket]);
+    send(s, id.CLIENT_UID, [uid]);
+    let init = wait_for(s, id.CLIENT_INIT, 2000);
+    if (init != null) {
+        s.slot = init.get(0);
+        send(s, id.PLAYER_ADD, [[0, 0, s.slot, 0]]);
+    }
+    return s;
+}
+fn ended() { return select([exited], 1) != null; }
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+print("platform (a public match outlasting its last player):");
+
+commands.send({ cmd: "reserve", data: { ticket: "t-a", sub: "g:1", name: "", expires: time_ms() + 30000 } });
+wait(0.25);
+let a = join(fx.G1, "t-a", "uid-a");
+check(a.slot == 0 && wait_for(a, id.GBE_RT_START, 3000) != null, "the only player sits down and the match starts");
+
+disconnect(a);
+wait(EMPTY_MS / 2000);
+check(!ended(), "their dropping does not end it");
+
+let back = join(fx.G1, "", "uid-a-restarted");
+check(back.slot == 0 && wait_for(back, id.GBE_RT_START, 2000) != null, "they come back to their seat within the grace");
+wait(EMPTY_MS / 1000);
+check(!ended(), "and the match goes on past the first deadline");
+
+disconnect(back);
+let t0 = time_ms();
+let code = select([exited], EMPTY_MS + 2000);
+let took = time_ms() - t0;
+check(code != null && code.value == 2, "left again, it ends with the last-connection code");
+check(took >= EMPTY_MS - 300, "once the grace has run out (" + took + " ms)");
+
+print("");
+print("Platform Empty Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "platform empty test failed"; }
+exit(0);

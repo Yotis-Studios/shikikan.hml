@@ -407,7 +407,7 @@ export fn ConnectionManager(server, game) {
                 }
                 if (new_host != null) {
                     self.game.switch_host(new_host);
-                } else {
+                } else if (self.platform == null || !self.platform.outlast()) {
                     self.kill_server(2);
                     return;
                 }

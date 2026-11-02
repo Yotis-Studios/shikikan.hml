@@ -19,6 +19,8 @@
 //   opts.jwks              the player token key set (ROUTER_JWKS)
 //   opts.public_start_ms   a public match starts this long after its first player sits down
 //                          (SHIKIKAN_PUBLIC_START_S, default 20 s), or once every seat is taken
+//   opts.public_empty_ms   a public match under way outlasts its last player this long, for them to
+//                          rejoin (SHIKIKAN_PUBLIC_EMPTY_S, default 120 s; 0 ends it at once)
 //   opts.public_lobby_data the settings string a public match plays with, since it has no host to
 //                          choose (SHIKIKAN_PUBLIC_LOBBY_DATA)
 //   opts.auth_timeout_ms   how long a public match waits for a connection's GBE_AUTH (10 s)

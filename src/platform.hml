@@ -88,6 +88,7 @@ export fn Platform(server, game, cm, opts) {
     let game_id = env_or("ROUTER_GAME", "");
     let auth_timeout_ms = 10000;
     let public_start_ms = number(env_or("SHIKIKAN_PUBLIC_START_S", "20")) * 1000;
+    let public_empty_ms = number(env_or("SHIKIKAN_PUBLIC_EMPTY_S", "120")) * 1000;
     let commands = null;
     if (opts != null) {
         if (opts?.jwks != null) { jwks = opts.jwks; }
@@ -95,6 +96,7 @@ export fn Platform(server, game, cm, opts) {
         if (opts?.game != null && game_id == "") { game_id = opts.game; }
         if (opts?.auth_timeout_ms != null) { auth_timeout_ms = opts.auth_timeout_ms; }
         if (opts?.public_start_ms != null) { public_start_ms = opts.public_start_ms; }
+        if (opts?.public_empty_ms != null) { public_empty_ms = opts.public_empty_ms; }
         if (opts?.commands != null) { commands = opts.commands; }
     }
 
@@ -111,6 +113,7 @@ export fn Platform(server, game, cm, opts) {
         commands_open: true,
         auth_timeout_ms: auth_timeout_ms,
         public_start_ms: public_start_ms,
+        public_empty_ms: public_empty_ms,
         filter: load_filter(),
         reservations: {},   // ticket -> { sub, name, expires }
         kicked: {},         // sub -> true: put out by the router, not let back
@@ -124,6 +127,7 @@ export fn Platform(server, game, cm, opts) {
         reported: { humans: -1, bots: -1, joinable: false, joinable_sent: false },
         timer: null,
         close_timer: null,
+        empty_timer: null,
 
         // On the server's loop once it is listening: the router's commands, the public match's
         // clock, and what the router lists.
@@ -417,6 +421,11 @@ export fn Platform(server, game, cm, opts) {
         // add_connection seated `connection` in `slot`.
         seated: fn(slot, connection) {
             if (self.first_seated_at == 0) { self.first_seated_at = time_ms(); }
+            if (self.empty_timer != null) {
+                server.cancel(self.empty_timer);
+                self.empty_timer = null;
+                print("platform: a player is back; the match goes on");
+            }
             if (connection?.sub != null) {
                 let pl = game.get_player(slot);
                 if (pl != null) {
@@ -431,6 +440,26 @@ export fn Platform(server, game, cm, opts) {
         // remove_connection is letting `connection` go from `slot`.
         left: fn(slot, connection) {
             if (connection?.sub != null) { send_event("leave", { sub: connection.sub, slot: slot }); }
+        },
+
+        // A PUBLIC MATCH UNDER WAY OUTLASTS ITS LAST PLAYER. The last connection leaving ends a
+        // lobby at once (cm.kill_server(2)), but a public match is all bots and one player more
+        // often than not, and that player's game crashing or their phone sleeping would end the
+        // match they are trying to rejoin. So the bots fly on for public_empty_ms
+        // (SHIKIKAN_PUBLIC_EMPTY_S, default 120 s; 0 for the old behaviour): a player seated in
+        // that time keeps it going, otherwise it ends as before. Returns whether it waits.
+        outlast: fn() {
+            if (!self.public || !game.game_started || self.public_empty_ms <= 0) { return false; }
+            if (self.empty_timer == null) {
+                print("platform: the last player left a match under way; it ends in " + (self.public_empty_ms / 1000) + " s unless someone comes back");
+                let me = self;
+                self.empty_timer = server.every(self.public_empty_ms, fn(periods, srv) {
+                    server.cancel(me.empty_timer);
+                    me.empty_timer = null;
+                    if (me.humans() == 0) { cm.kill_server(2); }
+                });
+            }
+            return true;
         },
 
         humans: fn() {
