@@ -7,6 +7,7 @@ import { send_event } from "../lib/lobby.hml";
 import { SaveData } from "./save_data.hml";
 import { sleep } from "@stdlib/time";
 import { exit } from "@stdlib/process";
+import { raise, SIGTERM } from "@stdlib/signal";
 
 export fn ConnectionManager(server, game) {
     let cm = {
@@ -470,6 +471,16 @@ export fn ConnectionManager(server, game) {
                 self.exit_fn(code);
                 return;
             }
+            // SIGTERM, NOT exit(). exit() flushes every stdio stream, and glibc 2.39 (Ubuntu 24.04)
+            // takes each stream's lock to do it -- including stdin's, which the router command
+            // reader (lib/platform) holds for as long as it sits blocked in read_line. exit()
+            // waited on it forever: the process never ended, the router kept listing a lobby
+            // nobody could join, and its port stayed taken (schneewolf-east1, 2026-11-03). glibc
+            // 2.35 does not lock there, which is why 22.04 never showed it. A default SIGTERM ends
+            // the process without running the flush; everything this server writes is already
+            // flushed line by line, and the code above names why it ended. exit() stays as the
+            // fallback for a host where SIGTERM is caught.
+            raise(SIGTERM);
             exit(code);
         },
 
