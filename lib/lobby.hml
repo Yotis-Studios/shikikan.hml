@@ -17,7 +17,11 @@ export fn set_event_sink(sink) {
 export fn send_event(event, data) {
     let msg = stringify({ event: event, data: data });
     write(msg + "\n");
-    if (event_sink != null) { event_sink(event, data); }
+    // Through a local: hemlockc (2.13) compiles a call through a module-level variable in an
+    // imported module as a call to a top-level function of that name, which does not exist, and
+    // the C fails with "invalid initializer". The interpreter is fine either way.
+    let sink = event_sink;
+    if (sink != null) { sink(event, data); }
 }
 
 // Read a command from GameRouter via stdin (blocking)
