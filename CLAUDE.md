@@ -67,6 +67,19 @@ hpm install
 hemlock server.hml
 ```
 
+## Before a release, and deploying one
+
+- **Compile it: `hemlockc server.hml -o /tmp/shikikan`.** Production runs the interpreter, but
+  the compiler is the only check that resolves every name: `hemlock check` and the interpreter
+  both let an undefined name through until the line runs. A `sleep` that was never imported
+  killed the start watchdog silently for weeks (`test/start_watchdog_test.hml`); hemlockc refused
+  the tree the whole time.
+- **Run every test**: `bash test/run_tests.sh`.
+- **Deploy with GameRouter's `tools/game-release.sh`** (GameRouter README, "Deploying a game
+  server"), packed with `hem_modules` on a build box. It installs the release beside the current
+  one and switches the router's `GAME_SERVER_DIR` link: running matches keep their release, the
+  next one gets the new one, and nothing restarts. Never copy over the live directory.
+
 ## Packet IDs
 
 Packet IDs in `src/id.hml` must match the GameMaker client exactly.
