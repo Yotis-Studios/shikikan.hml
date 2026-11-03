@@ -1,0 +1,82 @@
+// start_watchdog_test.hml -- a GAME_START held for a missing MAP_ACK still starts the match
+//
+// The host pressing Start while a client has not confirmed the map defers the start until the last
+// MAP_ACK lands, and a watchdog starts it anyway after start_watchdog_s (20 s in play). The
+// watchdog called `sleep` without importing it, so it threw the moment it ran -- inside a spawned
+// task, which dies alone and says nothing -- and a client that never acked held the lobby forever.
+// Every path here goes through the real packet handler; only the packets and connections are
+// stand-ins, and the watchdog is shortened so the test waits a fraction of a second.
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockServer, MockConnection } from "./mock.hml";
+import { Game } from "../src/game.hml";
+import { ConnectionManager } from "../src/connection_manager.hml";
+import { PacketHandler } from "../src/packet_handler.hml";
+import * as id from "../src/id.hml";
+import { sleep } from "@stdlib/time";
+
+let WATCHDOG_S = 0.2;
+
+// A packet as the handler reads one: its id, and get(n) for the values.
+fn packet(net_id, values) {
+    return { net_id: net_id, values: values, get: fn(n) { return self.values[n]; } };
+}
+
+// A lobby with the host (seat 0) on the map and a guest (seat 1) who has not acked it.
+// start_game is replaced by a counter: what is tested is WHEN it is called, and how often.
+fn lobby() {
+    let server = MockServer();
+    let game = Game(server);
+    let cm = ConnectionManager(server, game);
+    game.requires_map = true;
+    game.map = { hash: "map-1" };
+    game.start_watchdog_s = WATCHDOG_S;
+    let host = MockConnection();
+    host.map_ack = "map-1";
+    let guest = MockConnection();
+    guest.map_ack = null;
+    cm.connections[0] = host;
+    cm.connections[1] = guest;
+    let starts = { n: 0 };
+    game.start_game = fn() { starts.n = starts.n + 1; };
+    return { game: game, handler: PacketHandler(cm), host: host, guest: guest, starts: starts };
+}
+
+describe("GAME_START waiting on a MAP_ACK", fn() {
+    test("the watchdog starts the match when the ack never comes", fn() {
+        let l = lobby();
+        l.handler.handle_packet(l.host, packet(id.GAME_START, []));
+        expect(l.game.pending_start).to_be_true();
+        expect(l.starts.n).to_equal(0);
+        sleep(WATCHDOG_S * 4);
+        expect(l.starts.n).to_equal(1);
+        expect(l.game.pending_start).to_be_false();
+    });
+
+    test("a late ack starts it at once, and the watchdog does not start it again", fn() {
+        let l = lobby();
+        l.handler.handle_packet(l.host, packet(id.GAME_START, []));
+        l.handler.handle_packet(l.guest, packet(id.MAP_ACK, ["map-1"]));
+        expect(l.starts.n).to_equal(1);
+        sleep(WATCHDOG_S * 4);
+        expect(l.starts.n).to_equal(1);
+    });
+
+    test("with every ack in, Start starts the match straight away", fn() {
+        let l = lobby();
+        l.guest.map_ack = "map-1";
+        l.handler.handle_packet(l.host, packet(id.GAME_START, []));
+        expect(l.starts.n).to_equal(1);
+        expect(l.game.pending_start).to_be_false();
+    });
+
+    test("only the host can start", fn() {
+        let l = lobby();
+        l.handler.handle_packet(l.guest, packet(id.GAME_START, []));
+        expect(l.game.pending_start).to_be_false();
+        sleep(WATCHDOG_S * 4);
+        expect(l.starts.n).to_equal(0);
+    });
+});
+
+run();

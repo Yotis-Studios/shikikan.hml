@@ -23,7 +23,7 @@ import { SaveData } from "./save_data.hml";
 import { ChunkedUpload } from "./chunked.hml";
 import { send_event } from "../lib/lobby.hml";
 import { randint, randf } from "@stdlib/random";
-import { time_ms } from "@stdlib/time";
+import { sleep, time_ms } from "@stdlib/time";
 
 export fn PacketHandler(connection_manager) {
     let server = connection_manager.server;
@@ -271,10 +271,14 @@ export fn PacketHandler(connection_manager) {
                     else if (!g.pending_start) {
                         print("GAME_START deferred -- a client has not confirmed the map");
                         g.pending_start = true;
+                        // `sleep` MUST BE IMPORTED above. It was not, and an undefined name in a
+                        // spawned task throws only when the line runs, killing the task and
+                        // nothing else: the watchdog died silently on every deferred start, so a
+                        // client that never acked held the lobby forever. start_watchdog_test.
                         spawn(async fn() {
-                            sleep(20.0);
+                            sleep(g.start_watchdog_s);
                             if (g.pending_start) {
-                                print("start watchdog: 20s without full map acks -- starting anyway");
+                                print("start watchdog: " + g.start_watchdog_s + "s without full map acks -- starting anyway");
                                 g.pending_start = false;
                                 g.start_game();
                             }

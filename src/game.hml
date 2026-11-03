@@ -57,6 +57,8 @@ export fn Game(server) {
         // A GAME_START arrived while some client had not confirmed the map -- held until the
         // last MAP_ACK lands (or the 20s watchdog gives up waiting). See packet_handler.
         pending_start: false,
+        // How long that watchdog waits, in seconds. A field so a test can shorten it.
+        start_watchdog_s: 20.0,
         deck: Deck(),
         spectators: true,
         last_coin: 0,
