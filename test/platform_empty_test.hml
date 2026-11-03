@@ -37,7 +37,7 @@ spawn(async fn() {
 });
 sleep(0.5);
 
-fn join(token, ticket, uid) {
+fn join_as(token, ticket, uid) {
     let s = connect(PORT);
     send(s, id.GBE_AUTH, [token, ticket]);
     send(s, id.CLIENT_UID, [uid]);
@@ -61,14 +61,14 @@ print("platform (a public match outlasting its last player):");
 
 commands.send({ cmd: "reserve", data: { ticket: "t-a", sub: "g:1", name: "", expires: time_ms() + 30000 } });
 wait(0.25);
-let a = join(fx.G1, "t-a", "uid-a");
+let a = join_as(fx.G1, "t-a", "uid-a");
 check(a.slot == 0 && wait_for(a, id.GBE_RT_START, 3000) != null, "the only player sits down and the match starts");
 
 disconnect(a);
 wait(EMPTY_MS / 2000);
 check(!ended(), "their dropping does not end it");
 
-let back = join(fx.G1, "", "uid-a-restarted");
+let back = join_as(fx.G1, "", "uid-a-restarted");
 check(back.slot == 0 && wait_for(back, id.GBE_RT_START, 2000) != null, "they come back to their seat within the grace");
 wait(EMPTY_MS / 1000);
 check(!ended(), "and the match goes on past the first deadline");

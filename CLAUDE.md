@@ -84,12 +84,17 @@ hemlock server.hml
 
 ## Before a release, and deploying one
 
-- **Compile it: `hemlockc server.hml -o /tmp/shikikan`.** Production runs the interpreter, but
-  the compiler is the only check that resolves every name: `hemlock check` and the interpreter
-  both let an undefined name through until the line runs. A `sleep` that was never imported
-  killed the start watchdog silently for weeks (`test/start_watchdog_test.hml`); hemlockc refused
-  the tree the whole time.
-- **Run every test**: `bash test/run_tests.sh`.
+- **Compile it: `hemlockc server.hml -o shikikan-server`.** Production runs this binary from yotis-ops
+  stage 9 on (November 2026; `HEMLOCK_BIN=./shikikan-server`, relative to the release, with the
+  source beside it so the interpreter is a fallback by router setting alone). A release is built
+  on a build box with its `hem_modules` and ships `shikikan-server` at its root. Before 2.14 the
+  compiler was also the only check that resolved every name -- a `sleep` that was never imported
+  killed the start watchdog silently for weeks (`test/start_watchdog_test.hml`).
+- **Run every test, both ways**: `bash test/run_tests.sh` and `bash test/run_tests.sh --compiled`.
+  The compiled run is the one that matches production. Two hemlockc bugs shaped the tests:
+  a top-level `fn join` in an entry file breaks the builtin `join()` in every other module
+  (hemlang/hemlock#677, hence `join_as`), and a `let x = null` stays typed null after
+  reassignment (#678, hence `slot = -1`).
 - **Deploy with GameRouter's `tools/game-release.sh`** (GameRouter README, "Deploying a game
   server"), packed with `hem_modules` on a build box. It installs the release beside the current
   one and switches the router's `GAME_SERVER_DIR` link: running matches keep their release, the

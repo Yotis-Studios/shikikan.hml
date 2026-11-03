@@ -84,8 +84,10 @@ sleep(0.5);
 async fn play(index, ready_ch, go_ch) {
     let c = Client();
     c.connect("127.0.0.1", PORT);
-    let slot = null;
-    while (slot == null) {
+    // -1, not null, until CLIENT_INIT: hemlockc's type check keeps a `let x = null` typed null
+    // after reassignment and rejects `slot + 1` below (hemlang/hemlock#678).
+    let slot = -1;
+    while (slot == -1) {
         let p = c.recv_packet();
         if (p == null) { throw "closed before CLIENT_INIT"; }
         if (p.net_id == id.CLIENT_INIT) { slot = p.get(0); }

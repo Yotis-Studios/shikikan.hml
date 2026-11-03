@@ -47,7 +47,7 @@ fn reserve(ticket, sub, ms) {
     wait(0.25);
 }
 // The Quick Play client: GBE_AUTH with the token and ticket, CLIENT_UID, then the roster entry.
-fn join(token, ticket, uid) {
+fn join_as(token, ticket, uid) {
     let s = connect(PORT);
     send(s, id.GBE_AUTH, [token, ticket]);
     send(s, id.CLIENT_UID, [uid]);
@@ -80,31 +80,31 @@ send(silent, id.CLIENT_UID, ["uid-silent"]);
 check(wait_for(silent, id.CLIENT_INIT, 500) == null, "a connection without a token is not seated");
 check(kicked(silent) == "Sign in to Yotis Online to play online.", "and is put out when it never authenticates");
 
-let no_ticket = join(fx.G1, "", "uid-x");
+let no_ticket = join_as(fx.G1, "", "uid-x");
 check(no_ticket.slot == null && kicked(no_ticket) == "Use Quick Play to join this match.", "a verified player without a ticket is refused");
 
 reserve("t-banned", "g:4", 30000);
-let banned = join(fx.NO_PUBLIC, "t-banned", "uid-banned");
+let banned = join_as(fx.NO_PUBLIC, "t-banned", "uid-banned");
 check(banned.slot == null && kicked(banned) == "You cannot join public matches right now.", "a token with a public_play ban for this game is refused");
 
 reserve("t-stale", "g:1", 50);
 wait(0.2);
-let stale = join(fx.G1, "t-stale", "uid-stale");
+let stale = join_as(fx.G1, "t-stale", "uid-stale");
 let stale_reason = kick_reason(stale, id.PLAYER_KICK, 5000);
 check(stale.slot == null && stale_reason == "Use Quick Play to join this match.", "an expired ticket is refused, after waiting in case it was on its way (" + stale_reason + ")");
 
 
 reserve("t-wrong", "g:2", 30000);
-let wrong = join(fx.G1, "t-wrong", "uid-wrong");
+let wrong = join_as(fx.G1, "t-wrong", "uid-wrong");
 check(wrong.slot == null, "a ticket held for someone else is refused");
 
 reserve("t-a", "g:1", 30000);
 let t0 = time_ms();
-let a = join(fx.G1, "t-a", "uid-a");
+let a = join_as(fx.G1, "t-a", "uid-a");
 let auth = wait_for(a, id.GBE_AUTH, 1000);
 check(a.slot == 0 && auth != null && auth.get(0) == "g:1", "g:1 sits down on its ticket");
 reserve("t-b", "g:2", 30000);
-let b = join(fx.G2, "t-b", "uid-b");
+let b = join_as(fx.G2, "t-b", "uid-b");
 check(b.slot == 1, "g:2 too (" + b.slot + ")");
 check(until(fn() { return last_is("humans", 2); }, 1000) && last_is("bots", 2), "the router hears two humans and two bots");
 
@@ -132,7 +132,7 @@ check(waited >= START_MS - 300, "after its start delay (" + waited + " ms)");
 check(until(fn() { return last_is("joinable", true); }, 1000), "the router hears it is joinable: a bot's seat is free");
 
 reserve("t-c", "g:3", 30000);
-let c = join(fx.G3, "t-c", "uid-c");
+let c = join_as(fx.G3, "t-c", "uid-c");
 check(c.slot == 2 && wait_for(c, id.GBE_RT_START, 2000) != null, "a Quick Play player takes the bot's seat mid-match (" + c.slot + ")");
 let t = select([took], 1000);
 check(t != null && t.value.slot == 2 && t.value.sub == "g:3" && t.value.name == "Cat", "the game's take_seat hook hears it");
@@ -140,18 +140,18 @@ check(until(fn() { return last_is("humans", 3); }, 1000) && last_is("bots", 1) &
     "and the router hears three humans, one bot, still joinable");
 
 reserve("t-d", "u:7", 30000);
-let last = join(fx.U7, "t-d", "uid-d");
+let last = join_as(fx.U7, "t-d", "uid-d");
 check(last.slot == 3 && wait_for(last, id.GBE_RT_START, 2000) != null, "the last bot's seat goes the same way");
 check(until(fn() { return last_is("joinable", false); }, 1000) && last_is("humans", 4) && last_is("bots", 0),
     "then four humans, no bots, not joinable");
 
 reserve("t-e", "g:5", 30000);
-let full = join(fx.NO_CHAT, "t-e", "uid-e");
+let full = join_as(fx.NO_CHAT, "t-e", "uid-e");
 check(full.slot == null && kicked(full) == "The match has started.", "with no bot left, a newcomer is turned away");
 
 disconnect(b);
 check(until(fn() { return events.find("leave", "g:2") != null; }, 2000), "g:2 drops");
-let b2 = join(fx.G2, "", "uid-b-new");
+let b2 = join_as(fx.G2, "", "uid-b-new");
 check(b2.slot == 1 && wait_for(b2, id.GBE_RT_START, 2000) != null, "and comes back to its own seat without a ticket");
 
 let exited = channel(1);
