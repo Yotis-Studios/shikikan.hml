@@ -400,9 +400,10 @@ export fn Platform(server, game, cm, opts) {
             return null;
         },
 
-        // A real-time public match under way takes a Quick Play player into a bot's seat.
+        // A real-time match under way takes a newcomer into a bot's seat: a Quick Play player in a
+        // public match, or a friend arriving late to a private one (a host's room, by its code).
         joinable: fn() {
-            return self.public && game.game_started && self.rt != null && self.rt.running
+            return game.game_started && self.rt != null && self.rt.running
                 && self.rt.hooks?.take_seat != null && self.bot_seat() != null;
         },
 

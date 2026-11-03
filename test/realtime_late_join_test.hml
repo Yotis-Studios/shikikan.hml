@@ -1,0 +1,100 @@
+// realtime_late_join_test.hml -- a friend joins a private real-time match after it started
+//
+// A private lobby (no ROUTER_PUBLIC) with four seats and a real-time toy that has a take_seat
+// hook: the host starts with two of the four seats filled, so two are the game's bots. The router
+// must hear the match is joinable; a newcomer who connects mid-match must take a bot's seat (the
+// hook is told which); and once every seat is a person's, the match is no longer joinable and the
+// next newcomer is turned away.
+//
+//   hemlock test/realtime_late_join_test.hml
+
+import { Client, Packet } from "Yotis-Studios/gn.hml";
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import { Events, until, wait } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep } from "@stdlib/time";
+
+let PORT = 41981;
+
+let events = Events();
+let took = channel(8);
+let toy = {
+    new_match: fn(seed, seats) { return { tick: 0 }; },
+    intent: fn(m, slot, values) { },
+    step: fn(m) { m.tick = m.tick + 1; },
+    snapshot: fn(m, slot) { return [m.tick]; },
+    over: fn(m) { return m.tick >= 900; },
+    fingerprint: fn(m) { return "t" + m.tick; },
+    take_seat: fn(m, slot, player) { took.send({ slot: slot, name: player.name }); },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 4 });
+});
+sleep(0.5);
+
+// The engine's order: CLIENT_UID on open, then on CLIENT_INIT the roster entry and the name.
+fn seat(uid) {
+    let c = Client();
+    c.connect("127.0.0.1", PORT);
+    let u = Packet(id.CLIENT_UID);
+    u.add(uid);
+    c.send(u);
+    while (true) {
+        let p = c.recv_packet();
+        if (p == null) { return { c: c, slot: null, kicked: "closed" }; }
+        if (p.net_id == id.PLAYER_KICK) { return { c: c, slot: null, kicked: p.get(0) }; }
+        if (p.net_id == id.CLIENT_INIT) {
+            let slot = p.get(0);
+            let add = Packet(id.PLAYER_ADD);
+            add.add([0, 0, slot, 0]);
+            c.send(add);
+            let nm = Packet(id.PLAYER_NAME);
+            nm.add(uid);
+            c.send(nm);
+            return { c: c, slot: slot, kicked: "" };
+        }
+    }
+}
+fn last_is(name, value) {
+    let e = events.last(name);
+    return e != null && e.data == value;
+}
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+print("realtime late join (private lobby):");
+
+let host = seat("uid-host");
+let guest = seat("uid-guest");
+check(host.slot == 0 && guest.slot == 1, "the host and a guest sit down (" + host.slot + ", " + guest.slot + ")");
+wait(0.3);
+host.c.send(Packet(id.GAME_START));
+check(until(fn() { return last_is("isStarted", 1); }, 2000), "the host starts the match");
+check(until(fn() { return last_is("joinable", true); }, 2000), "the router hears it is joinable: two seats are bots");
+
+let late = seat("uid-late");
+check(late.slot != null && late.slot >= 2, "a friend arriving late sits down (" + late.slot + "; " + late.kicked + ")");
+let tr = select([took], 2000);
+let t = tr?.value;
+check(t != null && t.slot == late.slot, "in a bot's seat, handed over by the game");
+
+let later = seat("uid-later");
+check(later.slot != null, "a second late friend takes the last bot's seat (" + later.slot + ")");
+select([took], 2000);
+check(until(fn() { return last_is("joinable", false); }, 2000), "then every seat is a person's: no longer joinable");
+
+let extra = seat("uid-extra");
+check(extra.slot == null, "and the next newcomer is turned away (" + extra.kicked + ")");
+
+print("");
+print(total - failed + "/" + total + " passed");
+if (failed > 0) { exit(1); }
+exit(0);
