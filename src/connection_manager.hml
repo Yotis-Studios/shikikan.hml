@@ -333,6 +333,8 @@ export fn ConnectionManager(server, game) {
                     custom_packet.add(seated.hair_color);
                     custom_packet.add(seated.uniform_color);
                     custom_packet.add(seated.skin_color);
+                    custom_packet.add(seated.tip_color);
+                    custom_packet.add(seated.color_style);
                     connection.send(custom_packet);
 
                     let hat_packet = Packet(id.PLAYER_HAT);

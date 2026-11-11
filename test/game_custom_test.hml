@@ -1,0 +1,48 @@
+// game_custom_test.hml — 1.15 appearance: hair tip colour and colour style travel with PLAYER_CUSTOM
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockServer } from "./mock.hml";
+import { Game } from "../src/game.hml";
+import * as id from "../src/id.hml";
+
+describe("Player custom appearance (1.15)", fn() {
+    test("broadcast_custom carries tip and style after the four colours", fn() {
+        let server = MockServer();
+        let game = Game(server);
+        let player = game.get_player(2);
+        player.eye_color = 1;
+        player.hair_color = 16777215;
+        player.uniform_color = 3;
+        player.skin_color = 4;
+        player.tip_color = 9859308;
+        player.color_style = 1;
+        server.clear();
+        player.broadcast_custom();
+        let p = server.get_last_packet();
+        expect(p.net_id).to_equal(id.PLAYER_CUSTOM);
+        expect(p.get(0)).to_equal(2);
+        expect(p.get(2)).to_equal(16777215);
+        expect(p.get(5)).to_equal(9859308);
+        expect(p.get(6)).to_equal(1);
+    });
+
+    test("set_random_players clears tip and style on CPU seats", fn() {
+        let game = Game(MockServer());
+        let i = 0;
+        while (i < game.players.length) {
+            let player = game.get_player(i);
+            if (player != null) {
+                player.tip_color = 123;
+                player.color_style = 1;
+            }
+            i = i + 1;
+        }
+        game.set_random_players();
+        let player = game.get_player(1);
+        expect(player.is_cpu()).to_be_true();
+        expect(player.tip_color).to_be_null();
+        expect(player.color_style).to_be_null();
+    });
+});
+
+run();
