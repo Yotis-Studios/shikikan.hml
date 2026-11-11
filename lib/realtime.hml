@@ -26,6 +26,18 @@
 //                                 match under way (src/platform.hml); player is { name, sub }.
 //                                 Without it a public match is not joinable once it has started
 //   summary(match)                optional: an object of the game's own, for the match log
+//   results(match)                optional: -> [{ slot, game_xp, stats? }], what each seat earned,
+//                                 for Yotis Online (below)
+//
+// RESULTS. A match that ends by its own rules (over(), not the session stopping it) and has a
+// results() hook is reported to the router as one "result" event: { game, match_ref, humans,
+// players: [{ slot, sub, human, game_xp, stats }] }. sub is the seat's verified player
+// (src/platform.hml pins it), null for a bot or an unverified seat; humans is how many seats were
+// played by a person at any point, which Yotis Online uses to decide how far to trust the result.
+// match_ref is the start time, seed and the process's match number: unique, where the router's
+// lobby ids are reused ("match" and "ref" are keywords). GameRouter forwards the event to Yotis
+// Online, which turns game XP into YO XP. A hook that throws is printed and otherwise ignored, as
+// for the log.
 //
 // REJOINING. The session puts a returning uid back in its slot (connection_manager); once the
 // match has started it takes back only those (a newcomer is told "The match has started."). The
@@ -67,6 +79,7 @@ import { now } from "@stdlib/datetime";
 import { getenv } from "@stdlib/env";
 import { time_ms } from "@stdlib/time";
 import { open } from "@stdlib/fs";
+import { send_event } from "./lobby.hml";
 
 // Is u16 sequence a newer than b? Sequences wrap at 65536; b of -1 means none yet.
 export fn seq_newer(a, b) {
@@ -122,6 +135,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
         started_ms: 0,
         started_at: "",
         logged: false,    // this match is in the log already
+        matches: 0,       // matches this process has started, for the result's match id
 
         start: fn() {
             if (self.running) { return; }
@@ -154,6 +168,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
             self.started_ms = time_ms();
             self.started_at = now().to_iso_string();
             self.logged = false;
+            self.matches = self.matches + 1;
             self.acked = [];
             self.received = [];
             self.queue = [];
@@ -331,6 +346,43 @@ export fn Realtime(server, game, cm, hooks, opts) {
             }
         },
 
+        // The game's results() as a "result" event for the router (above, RESULTS).
+        report_results: fn() {
+            if (self.hooks?.results == null || self.state == null) { return; }
+            try {
+                let list = self.hooks.results(self.state);
+                let humans = 0;
+                let i = 0;
+                while (i < self.seats) {
+                    if (self.roster[i].human) { humans = humans + 1; }
+                    i = i + 1;
+                }
+                let players = [];
+                i = 0;
+                while (list != null && i < list.length) {
+                    let e = list[i];
+                    let slot = e?.slot;
+                    if (slot != null && slot >= 0 && slot < self.seats) {
+                        let sub = null;
+                        let pl = game.get_player(slot);
+                        if (pl?.sub != null) { sub = pl.sub; }
+                        let stats = null;
+                        if (e?.stats != null) { stats = e.stats; }
+                        players.push({ slot: slot, sub: sub, human: self.roster[slot].human, game_xp: e.game_xp, stats: stats });
+                    }
+                    i = i + 1;
+                }
+                send_event("result", {
+                    game: self.game_id,
+                    match_ref: self.started_at + "/" + game.seed + "/" + self.matches,
+                    humans: humans,
+                    players: players,
+                });
+            } catch (e) {
+                print("realtime: could not report the results: " + e);
+            }
+        },
+
         on_timer: fn(periods) {
             if (!self.running) { return; }
             let steps = periods;
@@ -387,6 +439,7 @@ export fn Realtime(server, game, cm, hooks, opts) {
             self.fingerprint = self.hooks.fingerprint(self.state);
             self.send_round(1);
             self.log_match("over");
+            self.report_results();
             self.stop();
             print("realtime: match over at tick " + self.tick + " (" + self.dropped + " ticks dropped, " + self.overflow + " intents over the buffer), fingerprint " + self.fingerprint);
             // Each sending seat's intent queue: how many waited, on average, when a step took one.

@@ -68,7 +68,12 @@ Two layers:
 {"event":"join","data":{"sub":"g:12","name":"Ace","slot":0}}
 {"event":"leave","data":{"sub":"g:12","slot":0}}
 {"event":"report","data":{"match":"...","reporter":"g:12","reported":"u:5","reason":"...","lines":[...]}}
+{"event":"result","data":{"game":"biplane-battle","match_ref":"<start>/<seed>/<n>","humans":2,"players":[{"slot":0,"sub":"g:12","human":true,"game_xp":250,"stats":{}}]}}
 ```
+
+`result` comes from a realtime game's optional `results(match)` hook when its match ends by its
+own rules (lib/realtime.hml, "RESULTS"); GameRouter forwards it to Yotis Online as YO XP. Hemlock
+reserves `match` and `ref`, hence `match_ref`.
 
 Commands on stdin (src/platform.hml): kick, mute, announce, close, reserve, jwks -- see README,
 "Yotis Online". `lib/identity.hml` verifies player tokens through libcrypto (Ed25519 is not in

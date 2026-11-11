@@ -14,6 +14,7 @@
 import { Client, Packet } from "Yotis-Studios/gn.hml";
 import { start_server } from "../src/start_server.hml";
 import { seq_newer } from "../lib/realtime.hml";
+import { set_event_sink } from "../lib/lobby.hml";
 import * as id from "../src/id.hml";
 import { setenv, exit } from "@stdlib/env";
 import { sleep, time_ms } from "@stdlib/time";
@@ -25,7 +26,7 @@ let INTENTS = 40;        // each client sends this many, one per snapshot, then 
 let SEQ_START = 65520;   // wraps after 16
 
 // What the hooks saw, read at the end: this test runs the server in-process.
-let seen = { this_tick: [0, 0, 0, 0], max_per_tick: 0, applied: 0, teams: -1, mode: -1, data: "", lobby: "" };
+let seen = { this_tick: [0, 0, 0, 0], max_per_tick: 0, applied: 0, teams: -1, mode: -1, data: "", lobby: "", result: null, results: 0 };
 
 // The toy rules. pos[slot] follows the seat's latest intent; the match ends at OVER_AT.
 let toy = {
@@ -72,7 +73,26 @@ let toy = {
     fingerprint: fn(m) {
         return "t" + m.tick + ":" + m.pos.join(",");
     },
+    // Each seat's game XP is its final position; the empty fourth seat is left out.
+    results: fn(m) {
+        let out = [];
+        let i = 0;
+        while (i < CLIENTS) {
+            out.push({ slot: i, game_xp: m.pos[i], stats: { pos: m.pos[i] } });
+            i = i + 1;
+        }
+        out.push({ slot: 99, game_xp: 1 });   // not a seat: dropped
+        return out;
+    },
 };
+
+// The "result" event the router would read, as the session prints it.
+set_event_sink(fn(event, data) {
+    if (event == "result") {
+        seen.result = data;
+        seen.results = seen.results + 1;
+    }
+});
 
 setenv("SHIKIKAN_REQUIRE_MAP", "0");
 spawn(async fn() {
@@ -273,7 +293,37 @@ check(results[2].queued_max >= 2 && results[0].queued_max <= 1,
     + results[2].queued_max + "), the others' do not (" + results[0].queued_max + ")");
 check(seen.data == "seat data 1", "new_match_with's seats carry each seat's GBE_SEAT_DATA (got '" + seen.data + "')");
 
+// The match ended by its rules, so its results went to the router once (finish() runs after the
+// last snapshot, so give it a moment).
+let waited = 0;
+while (seen.result == null && waited < 2000) { sleep(0.05); waited = waited + 50; }
+let res = seen.result;
+check(res != null && seen.results == 1, "one result event for the match (" + seen.results + ")");
+if (res != null) {
+    let xp_ok = res.players.length == CLIENTS;
+    i = 0;
+    while (xp_ok && i < res.players.length) {
+        let p = res.players[i];
+        let total = -1;
+        let j = 0;
+        while (j < results.length) {
+            if (results[j].slot == p.slot) { total = results[j].total; }
+            j = j + 1;
+        }
+        if (p.game_xp != total || p.stats.pos != total || p.sub != null || !p.human) { xp_ok = false; }
+        i = i + 1;
+    }
+    check(xp_ok, "it carries each human seat's game XP and stats, no sub (no tokens here), the stray slot dropped");
+    check(res.humans == CLIENTS, "it counts " + res.humans + " humans");
+    let parts = res.match_ref.split("/");
+    check(parts.length == 3 && parts[2] == "1", "its match_ref is the start, the seed and match 1 (" + res.match_ref + ")");
+} else {
+    check(false, "it carries each seat's game XP");
+    check(false, "it counts the humans");
+    check(false, "it has a match id");
+}
+
 print("");
-print("Realtime Tests: " + (11 - failed) + " passed, " + failed + " failed");
+print("Realtime Tests: " + (15 - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "realtime test failed"; }
 exit(0);
