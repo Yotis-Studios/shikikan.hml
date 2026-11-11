@@ -143,6 +143,10 @@ export fn PacketHandler(connection_manager) {
                     player.hair_color = packet.get(2);
                     player.uniform_color = packet.get(3);
                     player.skin_color = packet.get(4);
+                    // 1.15. Absent (null) from a client with neither set: gn drops trailing
+                    // undefined values, and get() past the end is null.
+                    player.tip_color = packet.get(5);
+                    player.color_style = packet.get(6);
                     player.broadcast_custom();
                 }
 

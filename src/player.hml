@@ -28,6 +28,10 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
         hair_color: null,
         uniform_color: null,
         skin_color: null,
+        // 1.15: hair tip colour and CHAR_STYLE (1 = vivid). Stored and relayed like the four
+        // colours above, or a late joiner sees the player without them.
+        tip_color: null,
+        color_style: null,
         hat: null,
 
         kick: fn(reason) {
@@ -60,6 +64,8 @@ export fn Player(game, client_num, connection, server, name, sprite, symbol, col
             packet.add(self.hair_color);
             packet.add(self.uniform_color);
             packet.add(self.skin_color);
+            packet.add(self.tip_color);
+            packet.add(self.color_style);
             self.server.broadcast(packet);
         },
 

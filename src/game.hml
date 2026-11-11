@@ -136,6 +136,8 @@ export fn Game(server) {
                     player.hair_color = null;
                     player.uniform_color = null;
                     player.skin_color = null;
+                    player.tip_color = null;
+                    player.color_style = null;
                     player.broadcast_custom();
                     player.hat = null;
                     player.broadcast_hat();
