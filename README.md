@@ -32,7 +32,7 @@ shikikan.hml/
 │   ├── realtime.hml        # A server-stepped match on top of the session
 │   └── host.hml            # Host authority validation
 ├── src/                    # Raifu Wars game logic
-│   ├── game.hml            # Turn management, start/end lifecycle
+│   ├── game.hml            # Turn management, start/end lifecycle, 1.15 action log
 │   ├── packet_handler.hml  # Packet dispatch, turn validation
 │   ├── player.hml          # Player state, CPU detection
 │   ├── map.hml             # Map decompression, hashing, coins
@@ -43,6 +43,43 @@ shikikan.hml/
 │   └── colors.hml          # Player color constants (BGR)
 └── server.hml              # Raifu Wars' entry point: start_server({})
 ```
+
+## Raifu Wars 1.15: the action log (v0.5.0)
+
+A Raifu Wars match is one ordered log of actions, sequenced here; the contract is RaifuWars
+`docs/dev/CONCURRENCY.md`, "Wire format (v1.15.0)", and `src/game.hml` ("THE 1.15 ACTION LOG")
+is the implementation.
+
+| id | packet | direction | fields |
+|---|---|---|---|
+| 190 | `ACTION_INTENT` | client to server | clientSeq, turn, seat, type, args (JSON object), check |
+| 191 | `ACTION` | server to everyone, sender included | seq, turn, seat, type, args, seed, origin, clientSeq, check |
+| 192 | `ACTION_REJECT` | server to the sender | clientSeq, reason |
+| 193 | `ACTION_LOG_REQUEST` | client to server | fromSeq |
+| 194 | `ACTION_LOG_END` | server to the requester | lastSeq |
+
+- An intent is accepted when the match is running, `turn` is the server's turn, `seat` is the
+  current seat, and the sender drives it: its own seat, its side's seats in 1v1, or any CPU seat
+  if it is the host. Otherwise `ACTION_REJECT` with one of `not running`, `not seated`,
+  `stale turn`, `not the current seat`, `not your seat`, `bad intent` (clientSeq not a whole
+  number; answered with clientSeq -1), `bad type` (empty, over 32 characters, or `start`),
+  `bad args` (not a JSON object, or over 4096 characters; empty means `{}`), `bad check`.
+- Accepted: the next `seq` (from 1 each match), a `seed` uniform in [0, 2^31 - 1), kept in the
+  match log, broadcast to all. An `end` advances the turn; its args gain `timer_s`.
+- The server's own actions have origin -1, clientSeq -1 and check "": `start {timer_s}` at the
+  match start, and `end {timer_s, why}` with why `timeout` (the lobby's `GAME_TIMER`, restarted
+  whenever the turn advances and once more when every client has sent `GAME_READY`; -1 is none),
+  `disconnect` (the current seat's player left), `host_migration` (the host left during a CPU
+  turn) or `rejoin` (the current seat's player came back mid-turn, the old `PLAYER_ENDTURN`).
+- `ACTION_LOG_REQUEST` (seated connections only) replays every ACTION from fromSeq, then
+  `ACTION_LOG_END` with the last seq.
+- While a match runs, the per-step packets are dropped (`RETIRED` in `src/game.hml`: roll, luck,
+  move, attack, reload, cancel, confirm, tile select, tier, end turn, card, rescue, zombie target,
+  turn checksum), logged once per id per match. Lobby, chat, custom/hat, ready, map, sync,
+  snapshot (`GAME_SAVE`) and coin packets are unchanged; `PLAYER_SYNC` reports the server's own
+  deadline. `COIN_SPAWN` still follows an end as its own packet, straight after the `end` ACTION.
+- On for a session with a map and no real-time match (Raifu Wars); off for a real-time game and
+  for `SHIKIKAN_REQUIRE_MAP=0` (`opts.actions` overrides). Tests: `test/actions_*_test.hml`.
 
 ## A real-time game
 

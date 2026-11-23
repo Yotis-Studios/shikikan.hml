@@ -1,0 +1,101 @@
+// actions_fixture.hml -- a 1.15 match on mock connections, for the action log tests
+//
+// The real Game, ConnectionManager and PacketHandler; only the server and connections are
+// stand-ins (test/mock.hml). MockServer records every broadcast, so an ACTION there went to
+// EVERYONE -- the sender included -- where connection.broadcast would have skipped the sender.
+
+import { MockServer, MockConnection } from "./mock.hml";
+import { Game } from "../src/game.hml";
+import { ConnectionManager } from "../src/connection_manager.hml";
+import { PacketHandler } from "../src/packet_handler.hml";
+import * as id from "../src/id.hml";
+import { parse } from "@stdlib/json";
+
+// A packet as the handler reads one: its id, and get(n) for the values (null past the end).
+export fn packet(net_id, values) {
+    return { net_id: net_id, values: values, get: fn(n) {
+        if (n < 0 || n >= self.values.length) { return null; }
+        return self.values[n];
+    } };
+}
+
+// Four seats; humans on `humans` (slot 0 is the host), the rest CPUs. Not started.
+export fn lobby(humans) {
+    let server = MockServer();
+    let game = Game(server);
+    game.requires_map = false;
+    let cm = ConnectionManager(server, game);
+    let conns = [];
+    let k = 0;
+    while (k < 4) {
+        conns.push(null);
+        k = k + 1;
+    }
+    k = 0;
+    while (k < humans.length) {
+        let slot = humans[k];
+        let c = MockConnection();
+        cm.connections[slot] = c;
+        game.players[slot].connection = c;
+        conns[slot] = c;
+        k = k + 1;
+    }
+    return { server: server, game: game, cm: cm, handler: PacketHandler(cm), conns: conns };
+}
+
+export fn started(humans, timer_s) {
+    let m = lobby(humans);
+    m.game.game_timer = timer_s;
+    m.game.start_game();
+    return m;
+}
+
+// Every ACTION broadcast so far, as objects.
+export fn actions(m) {
+    let out = [];
+    let k = 0;
+    while (k < m.server.broadcasts.length) {
+        let p = m.server.broadcasts[k];
+        if (p.net_id == id.ACTION) {
+            out.push({ seq: p.get(0), turn: p.get(1), seat: p.get(2), type: p.get(3), args: p.get(4),
+                seed: p.get(5), origin: p.get(6), client_seq: p.get(7), check: p.get(8),
+                a: parse(p.get(4)) });
+        }
+        k = k + 1;
+    }
+    return out;
+}
+
+export fn last_action(m) {
+    let l = actions(m);
+    if (l.length == 0) { return null; }
+    return l[l.length - 1];
+}
+
+// How many server ends with this why.
+export fn ends_why(m, why) {
+    let l = actions(m);
+    let n = 0;
+    let k = 0;
+    while (k < l.length) {
+        if (l[k].type == "end" && l[k].origin == -1 && l[k].a?.why == why) { n = n + 1; }
+        k = k + 1;
+    }
+    return n;
+}
+
+// The intent as the connection on `slot` sends it.
+export fn intent(m, slot, client_seq, turn, seat, kind, args) {
+    m.handler.handle_packet(m.conns[slot], packet(id.ACTION_INTENT, [client_seq, turn, seat, kind, args, "chk"]));
+}
+
+// The last ACTION_REJECT that slot's connection got, or null.
+export fn reject(m, slot) {
+    return m.conns[slot].get_packet_by_id(id.ACTION_REJECT);
+}
+
+// The current seat's owner ends the turn (host drives CPUs).
+export fn end_now(m, slot) {
+    let g = m.game;
+    intent(m, slot, 900 + g.turn, g.turn, g.current_seat(), "end", "{}");
+}

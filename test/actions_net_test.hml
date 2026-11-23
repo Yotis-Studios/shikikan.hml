@@ -1,0 +1,125 @@
+// actions_net_test.hml -- the 1.15 action log over real sockets (gn clients, the real server)
+//
+// What the mock tests cannot show: the ACTION really reaches the sender's own socket, a refusal
+// reaches only the sender, the turn deadline is driven by the server's own loop (gn's every())
+// and fires once, the log replays over the wire, and a retired packet is not relayed.
+//
+//   hemlock test/actions_net_test.hml
+
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import { connect, send, wait_for, all_of, until, wait } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep } from "@stdlib/time";
+import { parse } from "@stdlib/json";
+
+let PORT = 41973;
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+let ctx = { v: null };
+spawn(async fn() {
+    start_server({ port: PORT, seats: 4, actions: true, on_start: fn(c) { ctx.v = c; } });
+});
+sleep(0.5);
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+
+fn seat(uid) {
+    let s = connect(PORT);
+    send(s, id.CLIENT_UID, [uid]);
+    let init = wait_for(s, id.CLIENT_INIT, 2000);
+    if (init != null) {
+        s.slot = init.get(0);
+        send(s, id.PLAYER_ADD, [[0, 0, s.slot, 0]]);
+    }
+    return s;
+}
+
+// The ACTIONs a client has, optionally only those of one type.
+fn acts(s, kind) {
+    let l = all_of(s, id.ACTION);
+    let out = [];
+    let k = 0;
+    while (k < l.length) {
+        if (kind == null || l[k].get(3) == kind) { out.push(l[k]); }
+        k = k + 1;
+    }
+    return out;
+}
+
+print("actions over the wire:");
+let a = seat("uid-a");
+let b = seat("uid-b");
+check(a.slot == 0 && b.slot == 1, "two players sit down (" + a.slot + ", " + b.slot + ")");
+
+send(a, id.GAME_TIMER, [1]);
+wait(0.2);
+send(a, id.GAME_START, []);
+check(until(fn() { return acts(a, "start").length == 1 && acts(b, "start").length == 1; }, 2000), "both get the server's start action");
+let st = acts(a, "start")[0];
+check(st.get(0) == 1 && st.get(6) == -1 && parse(st.get(4)).timer_s == 1, "start is seq 1, origin -1, carrying timer_s");
+
+// a's own intent comes back to a, and reaches b
+send(a, id.ACTION_INTENT, [41, 0, 0, "move", "{\"tx\":1,\"ty\":2}", "c0"]);
+check(until(fn() { return acts(a, "move").length == 1 && acts(b, "move").length == 1; }, 2000), "the sender gets its own ACTION back, and so does everyone else");
+let mv = acts(a, "move")[0];
+check(mv.get(0) == 2 && mv.get(6) == 0 && mv.get(7) == 41 && mv.get(8) == "c0", "seq 2, origin 0, clientSeq 41, check passed through");
+
+// b acting for a's seat: refused, to b only
+send(b, id.ACTION_INTENT, [7, 0, 0, "move", "{}", ""]);
+let rj = wait_for(b, id.ACTION_REJECT, 2000);
+check(rj != null && rj.get(0) == 7 && rj.get(1) == "not your seat", "a stranger's intent is refused to the stranger");
+wait(0.2);
+check(all_of(a, id.ACTION_REJECT).length == 0 && acts(a, null).length == 2, "and nobody else hears of it");
+
+// a retired packet is not relayed
+send(a, id.PLAYER_ROLL, []);
+send(a, id.PLAYER_MOVE, [1, 2]);
+wait(0.3);
+check(all_of(b, id.PLAYER_ROLL).length == 0 && all_of(b, id.PLAYER_MOVE).length == 0, "retired PLAYER_ROLL and PLAYER_MOVE are dropped mid-match");
+
+// the 1 s deadline ends turn 0 by itself, once
+check(until(fn() { return acts(b, "end").length >= 1; }, 3000), "the server ends the turn at its deadline");
+let te = acts(b, "end")[0];
+let targs = parse(te.get(4));
+check(te.get(1) == 0 && te.get(2) == 0 && te.get(6) == -1 && targs.why == "timeout" && targs.timer_s == 1, "a timeout end for turn 0, seat 0, with the next timer_s");
+check(ctx.v.game.turn == 1, "the server's turn advanced");
+// b ends turn 1 early; turn 1's deadline must not fire into turn 2
+send(b, id.ACTION_INTENT, [8, 1, 1, "end", "{}", ""]);
+check(until(fn() { return acts(a, "end").length >= 2; }, 2000), "b's own end goes through");
+let be = acts(a, "end")[1];
+check(be.get(6) == 1 && be.get(1) == 1 && parse(be.get(4)).timer_s == 1 && parse(be.get(4))?.why == null, "b's end carries timer_s and no why");
+wait(0.5);
+check(acts(a, "end").length == 2, "no stray timeout for turn 1 after its early end");
+
+// the log replays over the wire: b asks again from seq 2 (seated connections only)
+let before = acts(b, null).length;
+let stranger = connect(PORT);
+send(stranger, id.ACTION_LOG_REQUEST, [1]);
+send(b, id.ACTION_LOG_REQUEST, [2]);
+let le = wait_for(b, id.ACTION_LOG_END, 2000);
+let all_b = acts(b, null);
+let replay = all_b.slice(before, all_b.length);
+let last_seq = -1;
+if (le != null) { last_seq = le.get(0); }
+print("  (log end " + last_seq + ", replayed " + replay.length + " of " + all_b.length + ")");
+let ok = le != null && replay.length == last_seq - 1;
+let k = 0;
+while (ok && k < replay.length) {
+    if (replay[k].get(0) != k + 2) { ok = false; }
+    k = k + 1;
+}
+check(ok && replay.length > 0 && replay[0].get(3) == "move", "ACTION_LOG_REQUEST from 2 replays seq 2.." + last_seq + " in order, then ACTION_LOG_END");
+wait(0.3);
+check(all_of(stranger, id.ACTION_LOG_END).length == 0, "a connection that is not seated gets no log");
+
+print("");
+print("Actions Net Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "actions net test failed"; }
+exit(0);

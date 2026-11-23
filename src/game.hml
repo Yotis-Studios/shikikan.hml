@@ -8,6 +8,54 @@ import { Deck } from "./deck.hml";
 import { COLORS } from "./colors.hml";
 import { send_event } from "../lib/lobby.hml";
 import { randint, randf, shuffle } from "@stdlib/random";
+import { parse, stringify } from "@stdlib/json";
+import { time_ms } from "@stdlib/time";
+
+// THE 1.15 ACTION LOG (RaifuWars docs/dev/CONCURRENCY.md, "Wire format (v1.15.0)").
+//
+// The server is the sequencer of one ordered log per match. A client sends ACTION_INTENT; this
+// server checks it is the sender's to make (match running, this turn, the current seat, a seat
+// the sender drives), stamps it with the next seq and a fresh seed, keeps it, and broadcasts it as
+// ACTION to EVERYONE, the sender included -- the sender applies its own action only when this copy
+// comes back. The server still knows no rules: it orders, stamps randomness and owns the clock.
+//
+// The legacy in-turn packets (RETIRED below) are dropped while a match runs: anything that
+// changes match state goes through the log or not at all.
+export let RETIRED = [
+    id.PLAYER_ROLL, id.PLAYER_LUCK, id.PLAYER_MOVE, id.PLAYER_SET_MOVE, id.PLAYER_IS_MOVE,
+    id.PLAYER_IS_ATTACK, id.PLAYER_SET_ATTACK, id.PLAYER_ATTACK, id.PLAYER_RELOAD,
+    id.PLAYER_CANCEL, id.PLAYER_CONFIRM, id.TILE_SELECT, id.PLAYER_TIER, id.PLAYER_ENDTURN,
+    id.PLAYER_CARD, id.PLAYER_RESCUE, id.PLAYER_ZOMBIE_TARGET, id.TURN_CHECKSUM,
+];
+
+// A seed is a uniform int in [0, 2^31 - 1); randint's bounds are inclusive.
+let SEED_MAX = 2147483646;
+// What a client may put in an intent. Bounded because the server keeps every action for the
+// match and replays the log to anybody who asks.
+let MAX_TYPE = 32;
+let MAX_ARGS = 4096;
+let MAX_CHECK = 256;
+
+// A whole number off the wire, or null. GameMaker sends reals, so 3.0 is 3; anything else
+// (a string, a bool, a fraction, nothing) is not a turn, a seat or a sequence number. integer()
+// matters: an array index must be an integer and get_player(3.0) throws.
+// A JSON object from a string, or null for anything else (not JSON, an array, a number).
+fn parse_object(s) {
+    try {
+        let o = parse(s);
+        if (typeof(o) == "object") { return o; }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+export fn as_int(v) {
+    let t = typeof(v);
+    if (t == "null" || t == "string" || t == "bool" || t == "object" || t == "array") { return null; }
+    if (integer(v) != v) { return null; }
+    return integer(v);
+}
 
 export fn Game(server) {
     let game = {
@@ -66,6 +114,18 @@ export fn Game(server) {
         // at lib/realtime.hml for a game that has a real-time match; null for RaifuWars.
         on_started: null,
         on_ended: null,
+
+        // 1.15 action log (top of file). actions_on is RaifuWars' turn-based match; start_server
+        // turns it off for a real-time game and for a session without a map (the Ganbatte
+        // engine's), which have no turns to sequence.
+        actions_on: true,
+        seq: 0,             // the last seq handed out this match; the next action is seq + 1
+        action_log: [],     // every ACTION this match, in seq order (replayed by ACTION_LOG_REQUEST)
+        // The turn deadline: time_ms() at which the server ends the turn itself, 0 for none,
+        // and the turn it was set for -- a deadline that outlives its turn does nothing.
+        deadline_ms: 0,
+        deadline_turn: -1,
+        legacy_dropped: {}, // retired packet ids already logged this match, logged once each
     };
 
     game.reset_seed = fn() {
@@ -101,9 +161,15 @@ export fn Game(server) {
         self.server.broadcast(packet);
 
         if (self.get_player(self.cur_player).is_cpu()) {
-            let endturn_packet = Packet(id.PLAYER_ENDTURN);
-            self.server.broadcast(endturn_packet);
-            self.end_turn();
+            // The old host was driving this CPU turn and its half-finished turn went with it:
+            // the turn ends. 1.15 says so as an action in the log, and only in a match.
+            if (self.actions_on) {
+                if (self.game_started) { self.server_end("host_migration"); }
+            } else {
+                let endturn_packet = Packet(id.PLAYER_ENDTURN);
+                self.server.broadcast(endturn_packet);
+                self.end_turn();
+            }
         }
     };
 
@@ -431,6 +497,17 @@ export fn Game(server) {
         self.server.broadcast(start_packet);
         self.broadcast_names();
 
+        // A fresh log for the match, opened by the server's own `start`.
+        if (self.actions_on) {
+            self.seq = 0;
+            self.action_log = [];
+            self.legacy_dropped = {};
+            let start_args = {};
+            start_args.timer_s = self.timer_s();
+            self.append_action(self.turn, self.current_seat(), "start", stringify(start_args), -1, -1, "");
+            self.restart_deadline();
+        }
+
         let j = 0;
         while (j < self.num_bases) {
             self.players[j].ready = false;
@@ -442,6 +519,8 @@ export fn Game(server) {
     game.end_game = fn(connection, packet) {
         if (!self.game_started) { return; }
         self.game_started = false;
+        self.deadline_ms = 0;
+        self.deadline_turn = -1;
         send_event("isStarted", 0);
         connection.broadcast(packet);
         if (self.on_ended != null) { self.on_ended(); }
@@ -632,11 +711,15 @@ export fn Game(server) {
         return n;
     };
 
+    // The server's turn bookkeeping. In a 1.15 match it runs only behind an `end` action (an
+    // intent or server_end) and sends no PLAYER_LUCK: randomness travels in each action's seed.
     game.end_turn = fn() {
-        let luck = randf(0.0, 1.0);
-        let luck_packet = Packet(id.PLAYER_LUCK);
-        luck_packet.add(luck);
-        self.server.broadcast(luck_packet);
+        if (!self.actions_on) {
+            let luck = randf(0.0, 1.0);
+            let luck_packet = Packet(id.PLAYER_LUCK);
+            luck_packet.add(luck);
+            self.server.broadcast(luck_packet);
+        }
 
         self.turn = self.turn + 1;
         self.cur_player = self.turn % self.turn_rotation();
@@ -650,6 +733,189 @@ export fn Game(server) {
                 self.map.spawn_coin();
             }
         }
+        // Every way the turn advances comes through here, so the deadline restarts here.
+        if (self.actions_on) { self.restart_deadline(); }
+    };
+
+    // ---- 1.15: the action log ----
+
+    game.current_seat = fn() {
+        return self.turn % self.turn_rotation();
+    };
+
+    // The lobby's turn timer in seconds, -1 for none (GAME_TIMER; anything not positive is none).
+    game.timer_s = fn() {
+        let t = self.game_timer;
+        let ty = typeof(t);
+        if (ty == "null" || ty == "string" || ty == "bool" || ty == "object" || ty == "array") { return -1; }
+        if (t <= 0) { return -1; }
+        return t;
+    };
+
+    // The deadline's clock: time_ms(). A method so a test can run the clock by hand.
+    game.now_ms = fn() { return time_ms(); };
+
+    game.restart_deadline = fn() {
+        let t = self.timer_s();
+        if (t > 0) {
+            self.deadline_ms = self.now_ms() + t * 1000;
+            self.deadline_turn = self.turn;
+        } else {
+            self.deadline_ms = 0;
+            self.deadline_turn = -1;
+        }
+    };
+
+    // Called on the server's loop (start_server's ticker). Ends the turn once at its deadline;
+    // a deadline set for an earlier turn is discarded, never fired.
+    game.check_deadline = fn() {
+        let now = self.now_ms();
+        if (!self.actions_on || !self.game_started || self.deadline_ms <= 0) { return false; }
+        if (self.deadline_turn != self.turn) {
+            self.deadline_ms = 0;
+            self.deadline_turn = -1;
+            return false;
+        }
+        if (now < self.deadline_ms) { return false; }
+        self.deadline_ms = 0;
+        self.deadline_turn = -1;
+        print("turn " + self.turn + " timed out");
+        self.server_end("timeout");
+        return true;
+    };
+
+    game.action_packet = fn(a) {
+        let p = Packet(id.ACTION);
+        p.add(a.seq);
+        p.add(a.turn);
+        p.add(a.seat);
+        p.add(a.type);
+        p.add(a.args);
+        p.add(a.seed);
+        p.add(a.origin);
+        p.add(a.client_seq);
+        p.add(a.check);
+        return p;
+    };
+
+    // Next seq, a fresh seed, into the log, out to everyone (the sender too).
+    game.append_action = fn(turn, seat, kind, args, origin, client_seq, check) {
+        self.seq = self.seq + 1;
+        let a = {
+            seq: self.seq,
+            turn: turn,
+            seat: seat,
+            type: kind,
+            args: args,
+            seed: randint(0, SEED_MAX),
+            origin: origin,
+            client_seq: client_seq,
+            check: check,
+        };
+        self.action_log.push(a);
+        self.server.broadcast(self.action_packet(a));
+        return a;
+    };
+
+    // A server-originated `end` for the current seat: why is "timeout", "disconnect",
+    // "host_migration" or "rejoin". Carries the next turn's timer like every end.
+    game.server_end = fn(why) {
+        let args = {};
+        args.timer_s = self.timer_s();
+        args.why = why;
+        self.append_action(self.turn, self.current_seat(), "end", stringify(args), -1, -1, "");
+        self.end_turn();
+    };
+
+    // Does connection slot i drive seat `seat` as a player? Its own seat, or -- in 1v1 -- any
+    // seat on its side (the commander drives its CPU teammates). The host-for-a-CPU rule is
+    // separate (intent_refusal) because it follows the host, not the seat.
+    game.drives_seat = fn(i, seat) {
+        if (i == null || seat == null) { return false; }
+        if (i >= self.turn_rotation()) { return false; }
+        if (seat == i) { return true; }
+        if (self.onevone) {
+            let half = integer(self.num_players / 2);
+            if ((i < half && seat < half) || (i >= half && seat >= half)) { return true; }
+        }
+        return false;
+    };
+
+    // Why slot i may not act for `seat` on `turn` now, or null when it may. is_host is the
+    // packet handler's (a public match has none).
+    game.intent_refusal = fn(i, is_host, turn, seat) {
+        if (!self.actions_on || !self.game_started) { return "not running"; }
+        if (i == null) { return "not seated"; }
+        if (turn == null || turn != self.turn) { return "stale turn"; }
+        if (seat == null || seat != self.current_seat()) { return "not the current seat"; }
+        let player = self.get_player(seat);
+        if (player == null) { return "not the current seat"; }
+        if (self.drives_seat(i, seat)) { return null; }
+        if (is_host && player.is_cpu()) { return null; }
+        return "not your seat";
+    };
+
+    // An ACTION_INTENT from slot i: null when accepted (and broadcast), else the reason to send
+    // back in ACTION_REJECT. Raw packet values; everything is checked here.
+    game.submit_intent = fn(i, is_host, client_seq, turn, seat, kind, args, check) {
+        if (as_int(client_seq) == null) { return "bad intent"; }
+        let t = as_int(turn);
+        let st = as_int(seat);
+        if (typeof(kind) != "string" || kind.length == 0 || kind.length > MAX_TYPE) { return "bad type"; }
+        if (kind == "start") { return "bad type"; }
+        // New locals rather than reassigned parameters, and nothing declared as a bare null
+        // and filled in later: hemlockc keeps such a variable typed null (hemlang/hemlock#678).
+        let a = "{}";
+        if (args != null && args != "") { a = args; }
+        if (typeof(a) != "string" || a.length > MAX_ARGS) { return "bad args"; }
+        let c = "";
+        if (check != null) { c = check; }
+        if (typeof(c) != "string" || c.length > MAX_CHECK) { return "bad check"; }
+        let why = self.intent_refusal(i, is_host, t, st);
+        if (why != null) { return why; }
+        // Legality of the JSON at the door: every client parses args when it applies the action,
+        // so one that does not parse would stop every board at once.
+        let obj = parse_object(a);
+        if (obj == null) { return "bad args"; }
+        if (kind == "end") {
+            obj.timer_s = self.timer_s();
+            a = stringify(obj);
+        }
+        self.append_action(t, st, kind, a, i, as_int(client_seq), c);
+        if (kind == "end") { self.end_turn(); }
+        return null;
+    };
+
+    // ACTION_LOG_REQUEST: every logged action from fromSeq on, in order, then ACTION_LOG_END.
+    game.send_log = fn(connection, from_seq) {
+        let from = as_int(from_seq);
+        if (from == null || from < 1) { from = 1; }
+        let k = from - 1;
+        while (k < self.action_log.length) {
+            connection.send(self.action_packet(self.action_log[k]));
+            k = k + 1;
+        }
+        let end_packet = Packet(id.ACTION_LOG_END);
+        end_packet.add(self.seq);
+        connection.send(end_packet);
+    };
+
+    // A retired packet during a 1.15 match: dropped, and said so once per id per match.
+    game.drop_retired = fn(net_id) {
+        let key = "" + net_id;
+        if (self.legacy_dropped[key] == null) {
+            self.legacy_dropped[key] = true;
+            print("1.15: dropping retired packet " + net_id + " during a match (logged once per match)");
+        }
+    };
+
+    game.is_retired = fn(net_id) {
+        let k = 0;
+        while (k < RETIRED.length) {
+            if (RETIRED[k] == net_id) { return true; }
+            k = k + 1;
+        }
+        return false;
     };
 
     // Initialize

@@ -147,3 +147,18 @@ export let GBE_LOBBY_DATA = 175;
 export let GBE_AUTH = 176;
 export let GBE_ANNOUNCE = 177;
 export let GBE_REPORT = 178;
+
+// 1.15: one ordered action log per match, sequenced here (RaifuWars docs/dev/CONCURRENCY.md,
+// "Wire format (v1.15.0)"; src/game.hml, "THE 1.15 ACTION LOG").
+//   ACTION_INTENT       client to server: clientSeq, turn, seat, type, args (JSON), check
+//   ACTION              server to EVERYONE, the sender included: seq, turn, seat, type, args,
+//                       seed, origin (connection id, -1 for the server), clientSeq (-1 for the
+//                       server), check ("" for the server)
+//   ACTION_REJECT       server to the sender: clientSeq, reason
+//   ACTION_LOG_REQUEST  client to server: fromSeq
+//   ACTION_LOG_END      server to the requester, after the ACTIONs from fromSeq: lastSeq
+export let ACTION_INTENT = 190;
+export let ACTION = 191;
+export let ACTION_REJECT = 192;
+export let ACTION_LOG_REQUEST = 193;
+export let ACTION_LOG_END = 194;

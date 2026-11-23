@@ -1,0 +1,145 @@
+// actions_intent_test.hml -- 1.15 ACTION_INTENT: who may act, and when (src/game.hml, submit_intent)
+//
+// Ownership: your own seat, your side's seats in 1v1, the host for a CPU seat -- and nobody else.
+// Staleness: an intent for another turn or another seat is refused. Accepted intents come back to
+// everyone, the sender included, with the next seq; refused ones come back only to the sender as
+// ACTION_REJECT and change nothing.
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import * as id from "../src/id.hml";
+import { lobby, started, actions, last_action, intent, reject, end_now } from "./actions_fixture.hml";
+
+describe("ACTION_INTENT ownership", fn() {
+    test("a player acts for its own seat; the ACTION goes to everyone, sender included", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        expect(g.turn).to_equal(0);
+        intent(m, 0, 7, 0, 0, "move", "{\"tx\":3,\"ty\":4}");
+        let a = last_action(m);
+        expect(a.seq).to_equal(2);
+        expect(a.type).to_equal("move");
+        expect(a.args).to_equal("{\"tx\":3,\"ty\":4}");
+        expect(a.origin).to_equal(0);
+        expect(a.client_seq).to_equal(7);
+        expect(a.check).to_equal("chk");
+        expect(a.seed >= 0 && a.seed < 2147483647).to_be_true();
+        // server.broadcast, not connection.broadcast: the sender is in "everyone"
+        expect(m.server.count_broadcasts(id.ACTION)).to_equal(2);
+        expect(reject(m, 0)).to_be_null();
+    });
+
+    test("a stranger is refused, and nothing is broadcast", fn() {
+        let m = started([0, 1], 30);
+        intent(m, 1, 5, 0, 0, "move", "{}");
+        let r = reject(m, 1);
+        expect(r.get(0)).to_equal(5);
+        expect(r.get(1)).to_equal("not your seat");
+        expect(m.server.count_broadcasts(id.ACTION)).to_equal(1);
+        expect(m.game.seq).to_equal(1);
+    });
+
+    test("the host drives a CPU seat; a guest may not", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        end_now(m, 0);
+        end_now(m, 1);
+        expect(g.current_seat()).to_equal(2);
+        expect(g.get_player(2).is_cpu()).to_be_true();
+        intent(m, 1, 1, g.turn, 2, "rush", "{}");
+        expect(reject(m, 1).get(1)).to_equal("not your seat");
+        intent(m, 0, 1, g.turn, 2, "rush", "{}");
+        expect(reject(m, 0)).to_be_null();
+        expect(last_action(m).type).to_equal("rush");
+        expect(last_action(m).origin).to_equal(0);
+    });
+
+    test("1v1: a commander drives its own side's seats, not the other side's", fn() {
+        let m = lobby([0, 2]);
+        let g = m.game;
+        g.set_one_v_one(true);
+        g.game_timer = 30;
+        g.start_game();
+        let side = fn() { if (g.current_seat() < 2) { return 0; } return 2; };
+        while (g.current_seat() != 1) { end_now(m, side()); }
+        let t = g.turn;
+        intent(m, 2, 1, t, 1, "reload", "{}");
+        expect(reject(m, 2).get(1)).to_equal("not your seat");
+        intent(m, 0, 2, t, 1, "reload", "{}");
+        expect(reject(m, 0)).to_be_null();
+        expect(last_action(m).seat).to_equal(1);
+        while (g.current_seat() != 3) { end_now(m, side()); }
+        m.conns[0].clear();
+        intent(m, 0, 3, g.turn, 3, "reload", "{}");
+        expect(reject(m, 0).get(1)).to_equal("not your seat");
+        intent(m, 2, 4, g.turn, 3, "reload", "{}");
+        expect(last_action(m).origin).to_equal(2);
+    });
+
+    test("a spectator never acts, even for a seat nobody drives", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        end_now(m, 0);
+        end_now(m, 1);
+        expect(g.drives_seat(5, 2)).to_be_false();
+        expect(g.intent_refusal(5, false, g.turn, 2)).to_equal("not your seat");
+    });
+});
+
+describe("ACTION_INTENT staleness and shape", fn() {
+    test("the wrong turn or the wrong seat is refused", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        end_now(m, 0);
+        // seat 1's turn (turn 1): a late intent for turn 0, an early one for turn 2
+        intent(m, 1, 10, 0, 1, "move", "{}");
+        expect(reject(m, 1).get(1)).to_equal("stale turn");
+        intent(m, 1, 11, 2, 1, "move", "{}");
+        expect(reject(m, 1).get(1)).to_equal("stale turn");
+        intent(m, 0, 12, 1, 0, "move", "{}");
+        expect(reject(m, 0).get(1)).to_equal("not the current seat");
+        expect(g.seq).to_equal(2);
+        expect(g.turn).to_equal(1);
+    });
+
+    test("before the match runs, every intent is refused", fn() {
+        let m = lobby([0, 1]);
+        intent(m, 0, 1, 0, 0, "move", "{}");
+        expect(reject(m, 0).get(1)).to_equal("not running");
+        expect(m.server.count_broadcasts(id.ACTION)).to_equal(0);
+    });
+
+    test("bad args, a client 'start' and a non-number turn are refused", fn() {
+        let m = started([0, 1], 30);
+        intent(m, 0, 1, 0, 0, "move", "{not json");
+        expect(reject(m, 0).get(1)).to_equal("bad args");
+        intent(m, 0, 2, 0, 0, "move", "[1,2]");
+        expect(reject(m, 0).get(1)).to_equal("bad args");
+        intent(m, 0, 3, 0, 0, "start", "{}");
+        expect(reject(m, 0).get(1)).to_equal("bad type");
+        intent(m, 0, 4, "0", 0, "move", "{}");
+        expect(reject(m, 0).get(1)).to_equal("stale turn");
+        expect(m.game.seq).to_equal(1);
+        // empty args are an empty object
+        intent(m, 0, 5, 0.0, 0, "cancel", "");
+        expect(last_action(m).args).to_equal("{}");
+        expect(last_action(m).turn).to_equal(0);
+    });
+
+    test("a client end advances the turn and carries the next turn's timer_s", fn() {
+        let m = started([0, 1], 45);
+        let g = m.game;
+        intent(m, 0, 9, 0, 0, "end", "{\"note\":1}");
+        let a = last_action(m);
+        expect(a.type).to_equal("end");
+        expect(a.a.timer_s).to_equal(45);
+        expect(a.a.note).to_equal(1);
+        expect(g.turn).to_equal(1);
+        // no legacy luck in a 1.15 match
+        expect(m.server.count_broadcasts(id.PLAYER_LUCK)).to_equal(0);
+        g.game_timer = -1;
+        end_now(m, 1);
+        expect(last_action(m).a.timer_s).to_equal(-1);
+    });
+});
+
+run();

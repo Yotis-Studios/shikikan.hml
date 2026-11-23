@@ -322,9 +322,14 @@ export fn ConnectionManager(server, game) {
                     }
                 }
                 if (is_current || is_onevone_team) {
-                    let endturn_packet = Packet(id.PLAYER_ENDTURN);
-                    connection.broadcast(endturn_packet);
-                    g.end_turn();
+                    if (g.actions_on) {
+                        // 1.15: the same end, as an action in the log.
+                        g.server_end("rejoin");
+                    } else {
+                        let endturn_packet = Packet(id.PLAYER_ENDTURN);
+                        connection.broadcast(endturn_packet);
+                        g.end_turn();
+                    }
                 }
             }
 
@@ -394,6 +399,14 @@ export fn ConnectionManager(server, game) {
                 return;
             }
 
+            // 1.15: the seat whose turn it is lost its player mid-match -> the server ends that
+            // turn (`end`, why "disconnect"). Decided BEFORE the host search below, and fired only
+            // if nothing else ended the turn meanwhile: a host leaving during a CPU turn has
+            // already ended it as "host_migration" by then.
+            let g = self.game;
+            let end_on_drop = g.actions_on && g.game_started && g.drives_seat(conn_id, g.current_seat());
+            let turn_before = g.turn;
+
             if (self.platform != null) { self.platform.left(conn_id, connection); }
             self.connections[conn_id] = null;
             self.session.clear_connection(conn_id);
@@ -422,6 +435,9 @@ export fn ConnectionManager(server, game) {
                 disconnect_packet.add(conn_id);
                 self.server.broadcast(disconnect_packet);
                 self.game.destroy_player_connection(conn_id);
+                if (end_on_drop && g.game_started && g.turn == turn_before) {
+                    g.server_end("disconnect");
+                }
             } else {
                 print("Connection refused");
             }

@@ -132,6 +132,17 @@ parse. Both ends read a number and dispatch on it, so one end just performs the 
 packet shapes, what 1.14 added and why, host migration, the client's packet queue lock, and notes
 for a redesign. It is the shared reference; neither repo owns the protocol alone.
 
+## 1.15: the action log (ACTION_INTENT 190 .. ACTION_LOG_END 194), v0.5.0
+
+The server sequences one ordered log of actions per match (README, "Raifu Wars 1.15"; the contract
+is RaifuWars `docs/dev/CONCURRENCY.md`). It validates each intent's turn, seat and ownership,
+stamps `seq` and a `seed`, keeps it, and broadcasts the ACTION to everyone INCLUDING the sender. It
+owns the turn timer (`check_deadline` on a `Server.every(100)` ticker, never a spawned task) and
+appends its own `start` and `end` actions. The old per-step packets (`RETIRED` in game.hml) are
+dropped during a match. `game.end_turn()` is the only place the turn advances and restarts the
+deadline; keep it that way. Never call `end_turn()` alone in a match: go through `server_end(why)`
+or an accepted `end` intent, or the clients never hear the turn changed.
+
 ## 1.14: GAME_NUM_PLAYERS (115)
 
 The host may resize the lobby roster online. Previously every client derived `numPlayers` from the

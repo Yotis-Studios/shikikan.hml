@@ -1,0 +1,190 @@
+// actions_log_test.hml -- 1.15: one seq for every action, the server's own ends, the log replay,
+// and the retired per-step packets (src/game.hml, "THE 1.15 ACTION LOG")
+
+import { describe, test, expect, run } from "@stdlib/testing";
+import { MockConnection } from "./mock.hml";
+import * as id from "../src/id.hml";
+import { lobby, started, actions, last_action, ends_why, intent, reject, end_now, packet } from "./actions_fixture.hml";
+
+describe("the action sequence", fn() {
+    test("seq is monotonic and shared by client and server actions; it restarts each match", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        intent(m, 0, 1, 0, 0, "move", "{}");
+        end_now(m, 0);
+        let now = g.deadline_ms;
+        g.now_ms = fn() { return now; };
+        g.check_deadline();                       // seat 1 times out: a server action
+        intent(m, 0, 2, g.turn, 2, "rush", "{}"); // host for the CPU at seat 2
+        let l = actions(m);
+        expect(l.length).to_equal(5);
+        let k = 0;
+        while (k < l.length) {
+            expect(l[k].seq).to_equal(k + 1);
+            k = k + 1;
+        }
+        expect(l[0].type).to_equal("start");
+        expect(l[0].origin).to_equal(-1);
+        expect(l[0].client_seq).to_equal(-1);
+        expect(l[0].check).to_equal("");
+        expect(l[0].a.timer_s).to_equal(30);
+        expect(l[3].origin).to_equal(-1);
+        expect(l[3].a.why).to_equal("timeout");
+        expect(l[4].origin).to_equal(0);
+        // a new match starts a new log
+        g.end_game(MockConnection(), packet(id.GAME_END, []));
+        g.start_game();
+        expect(last_action(m).seq).to_equal(1);
+        expect(g.action_log.length).to_equal(1);
+    });
+
+    test("ACTION_LOG_REQUEST replays from fromSeq in order, then ACTION_LOG_END", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        intent(m, 0, 1, 0, 0, "move", "{}");
+        intent(m, 0, 2, 0, 0, "attack", "{\"seat\":1}");
+        end_now(m, 0);
+        let late = MockConnection();
+        m.cm.connections[4] = late;               // a spectator: seated, so it may ask
+        m.handler.handle_packet(late, packet(id.ACTION_LOG_REQUEST, [2]));
+        expect(late.packets.length).to_equal(4);
+        expect(late.packets[0].net_id).to_equal(id.ACTION);
+        expect(late.packets[0].get(0)).to_equal(2);
+        expect(late.packets[1].get(0)).to_equal(3);
+        expect(late.packets[1].get(4)).to_equal("{\"seat\":1}");
+        expect(late.packets[2].get(3)).to_equal("end");
+        // the replay is the same action: same seed
+        expect(late.packets[1].get(5)).to_equal(actions(m)[2].seed);
+        expect(late.packets[3].net_id).to_equal(id.ACTION_LOG_END);
+        expect(late.packets[3].get(0)).to_equal(4);
+        // past the end: just the end marker
+        late.clear();
+        m.handler.handle_packet(late, packet(id.ACTION_LOG_REQUEST, [99]));
+        expect(late.packets.length).to_equal(1);
+        expect(late.packets[0].get(0)).to_equal(4);
+        // a connection nobody seated gets nothing
+        let stranger = MockConnection();
+        m.handler.handle_packet(stranger, packet(id.ACTION_LOG_REQUEST, [1]));
+        expect(stranger.packets.length).to_equal(0);
+    });
+});
+
+describe("the server's own ends", fn() {
+    test("the deadline ends the turn once, and a deadline outrun by an early end does nothing", fn() {
+        let m = lobby([0, 1]);
+        let g = m.game;
+        let clock = { t: 1000000 };
+        g.now_ms = fn() { return clock.t; };
+        g.game_timer = 30;
+        g.start_game();
+        let d0 = g.deadline_ms;
+        expect(d0).to_equal(1030000);
+        clock.t = d0 - 1;
+        expect(g.check_deadline()).to_be_false();
+        clock.t = d0;
+        expect(g.check_deadline()).to_be_true();
+        expect(g.turn).to_equal(1);
+        expect(g.check_deadline()).to_be_false();
+        expect(ends_why(m, "timeout")).to_equal(1);
+        expect(last_action(m).turn).to_equal(0);
+        expect(last_action(m).seat).to_equal(0);
+        expect(last_action(m).a.timer_s).to_equal(30);
+        // turn 1's deadline restarted from the moment turn 0 ended
+        let d1 = g.deadline_ms;
+        expect(d1).to_equal(d0 + 30000);
+        // seat 1 ends early, 5 s in; turn 1's deadline must not fire into turn 2
+        clock.t = d0 + 5000;
+        end_now(m, 1);
+        expect(g.deadline_ms).to_equal(d0 + 35000);
+        expect(g.deadline_turn).to_equal(2);
+        clock.t = d1;
+        expect(g.check_deadline()).to_be_false();
+        expect(ends_why(m, "timeout")).to_equal(1);
+        // a deadline left over from another turn is discarded, never fired
+        g.deadline_ms = 1;
+        g.deadline_turn = g.turn - 1;
+        clock.t = d1 + 999999;
+        expect(g.check_deadline()).to_be_false();
+        expect(ends_why(m, "timeout")).to_equal(1);
+        // no timer, no deadline
+        g.game_timer = -1;
+        end_now(m, 0);
+        expect(g.deadline_ms).to_equal(0);
+        expect(g.check_deadline()).to_be_false();
+    });
+
+    test("the host leaving during a CPU turn ends it once, as host_migration", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        end_now(m, 0);
+        end_now(m, 1);
+        expect(g.get_player(2).is_cpu()).to_be_true();
+        m.cm.remove_connection(m.conns[0]);
+        expect(g.host).to_equal(1);
+        expect(ends_why(m, "host_migration")).to_equal(1);
+        expect(ends_why(m, "disconnect")).to_equal(0);
+        expect(g.turn).to_equal(3);
+        expect(m.server.count_broadcasts(id.PLAYER_ENDTURN)).to_equal(0);
+    });
+
+    test("the current seat's player leaving ends the turn once, as disconnect; anyone else, not at all", fn() {
+        let m = started([0, 1, 2], 30);
+        let g = m.game;
+        m.cm.remove_connection(m.conns[2]);       // seat 2 leaves on seat 0's turn
+        expect(actions(m).length).to_equal(1);
+        m.cm.remove_connection(m.conns[0]);       // the host leaves on its own turn
+        expect(g.host).to_equal(1);
+        expect(ends_why(m, "disconnect")).to_equal(1);
+        expect(ends_why(m, "host_migration")).to_equal(0);
+        expect(g.turn).to_equal(1);
+        expect(last_action(m).seat).to_equal(0);
+    });
+});
+
+describe("retired packets in a match", fn() {
+    test("in-turn legacy packets are dropped; chat, custom and sync still work", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        let host = m.conns[0];
+        m.server.clear();
+        m.handler.handle_packet(host, packet(id.PLAYER_ROLL, []));
+        m.handler.handle_packet(host, packet(id.PLAYER_ROLL, []));
+        m.handler.handle_packet(host, packet(id.PLAYER_ENDTURN, []));
+        m.handler.handle_packet(host, packet(id.PLAYER_CARD, [2, 0, 1]));
+        m.handler.handle_packet(host, packet(id.PLAYER_ATTACK, [1]));
+        m.handler.handle_packet(host, packet(id.PLAYER_TIER, [-1, 0]));
+        m.handler.handle_packet(host, packet(id.TURN_CHECKSUM, [0, "abc"]));
+        expect(m.server.broadcasts.length).to_equal(0);
+        expect(g.turn).to_equal(0);
+        expect(g.get_player(0).tier).to_equal(0);
+        expect(g.legacy_dropped["" + id.PLAYER_ROLL]).to_be_true();
+        m.handler.handle_packet(host, packet(id.MESSAGE, ["gg"]));
+        expect(m.server.count_broadcasts(id.MESSAGE)).to_equal(1);
+        m.handler.handle_packet(host, packet(id.PLAYER_CUSTOM, [0, 1, 2, 3, 4, 5, 1]));
+        expect(m.server.count_broadcasts(id.PLAYER_CUSTOM)).to_equal(1);
+        m.handler.handle_packet(host, packet(id.PLAYER_SYNC, []));
+        let sync = m.server.get_last_packet();
+        expect(sync.net_id).to_equal(id.PLAYER_SYNC);
+        expect(sync.get(1)).to_equal(g.deadline_ms / 1000);
+    });
+
+    test("a mid-match rejoin onto the current seat ends the turn as an action, not PLAYER_ENDTURN", fn() {
+        let m = started([0, 1], 30);
+        let g = m.game;
+        end_now(m, 0);
+        m.cm.remove_connection(m.conns[1]);       // seat 1 leaves on its own turn
+        expect(ends_why(m, "disconnect")).to_equal(1);
+        end_now(m, 0);                            // the host plays CPU seat 2
+        end_now(m, 0);                            // and seat 3
+        end_now(m, 0);                            // its own seat 0
+        expect(g.current_seat()).to_equal(1);
+        let back = MockConnection();
+        m.cm.add_connection(back);
+        expect(m.cm.get_id_from_connection(back)).to_equal(1);
+        expect(ends_why(m, "rejoin")).to_equal(1);
+        expect(m.server.count_broadcasts(id.PLAYER_ENDTURN)).to_equal(0);
+        expect(g.current_seat()).to_equal(2);
+    });
+});
+
+run();

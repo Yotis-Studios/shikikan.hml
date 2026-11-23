@@ -13,6 +13,8 @@
 //   opts.match_log  a real-time match appends one JSON line here when it ends (lib/realtime.hml);
 //                   SHIKIKAN_MATCH_LOG overrides it, and neither set means no log
 //   opts.game       the game's id, written in each line of the match log
+//   opts.actions    force the 1.15 action log on or off (default: on for a turn-based game with
+//                   a map -- RaifuWars -- off for a real-time game or SHIKIKAN_REQUIRE_MAP=0)
 //
 // Yotis Online (src/platform.hml). GameRouter sets these through the environment; tests pass them:
 //   opts.public            a Quick Play match (ROUTER_PUBLIC=1)
@@ -79,6 +81,10 @@ export fn start_server(opts) {
     let env_map = getenv("SHIKIKAN_REQUIRE_MAP");
     if (env_map != null && env_map == "0") { game.requires_map = false; }
     if (opts != null && opts?.seats != null) { game.set_seats(opts.seats); }
+    // The 1.15 action log is RaifuWars' turn-based match: off for a real-time game and for a
+    // session without a map, which have no turns to sequence. opts.actions overrides (tests).
+    game.actions_on = game.requires_map && (opts == null || opts?.realtime == null);
+    if (opts != null && opts?.actions != null) { game.actions_on = opts.actions; }
     let cm = ConnectionManager(server, game);
     let handler = PacketHandler(cm);
 
@@ -111,6 +117,12 @@ export fn start_server(opts) {
             // Set directly, not through set_game_mode: a Raifu Wars rule there would change the teams.
             game.game_mode = integer(number(modes[randint(0, modes.length - 1)].trim()));
         }
+    }
+
+    // The turn deadline's clock, on the server's own loop like every packet handler (gn's
+    // every()), so it needs no locking against them. A no-op outside a 1.15 match.
+    if (game.actions_on) {
+        server.every(100, fn(periods, srv) { game.check_deadline(); });
     }
 
     server.on("ready", fn() {

@@ -1,7 +1,10 @@
 // game_custom_test.hml — 1.15 appearance: hair tip colour and colour style travel with PLAYER_CUSTOM
 
 import { describe, test, expect, run } from "@stdlib/testing";
-import { MockServer } from "./mock.hml";
+import { MockServer, MockConnection } from "./mock.hml";
+import { ConnectionManager } from "../src/connection_manager.hml";
+import { PacketHandler } from "../src/packet_handler.hml";
+import { packet } from "./actions_fixture.hml";
 import { Game } from "../src/game.hml";
 import * as id from "../src/id.hml";
 
@@ -42,6 +45,51 @@ describe("Player custom appearance (1.15)", fn() {
         expect(player.is_cpu()).to_be_true();
         expect(player.tip_color).to_be_null();
         expect(player.color_style).to_be_null();
+    });
+
+    test("PLAYER_CUSTOM stores tip and style and relays all seven; a five-value one clears them", fn() {
+        let server = MockServer();
+        let game = Game(server);
+        let cm = ConnectionManager(server, game);
+        let handler = PacketHandler(cm);
+        let c = MockConnection();
+        cm.connections[1] = c;
+        game.players[1].connection = c;
+        handler.handle_packet(c, packet(id.PLAYER_CUSTOM, [1, 11, 22, 33, 44, 55, 1]));
+        let player = game.get_player(1);
+        expect(player.tip_color).to_equal(55);
+        expect(player.color_style).to_equal(1);
+        let p = server.get_last_packet();
+        expect(p.net_id).to_equal(id.PLAYER_CUSTOM);
+        expect(p.get(5)).to_equal(55);
+        expect(p.get(6)).to_equal(1);
+        handler.handle_packet(c, packet(id.PLAYER_CUSTOM, [1, 11, 22, 33, 44]));
+        expect(player.tip_color).to_be_null();
+        expect(player.color_style).to_be_null();
+    });
+
+    test("a lobby joiner is sent everyone's tip and style", fn() {
+        let server = MockServer();
+        let game = Game(server);
+        game.requires_map = false;
+        let cm = ConnectionManager(server, game);
+        let host = MockConnection();
+        cm.connections[0] = host;
+        game.players[0].connection = host;
+        game.players[0].tip_color = 777;
+        game.players[0].color_style = 1;
+        let joiner = MockConnection();
+        cm.add_connection(joiner);
+        let found = false;
+        let k = 0;
+        while (k < joiner.packets.length) {
+            let q = joiner.packets[k];
+            if (q.net_id == id.PLAYER_CUSTOM && q.get(0) == 0) {
+                found = q.get(5) == 777 && q.get(6) == 1;
+            }
+            k = k + 1;
+        }
+        expect(found).to_be_true();
     });
 });
 

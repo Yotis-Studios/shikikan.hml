@@ -20,6 +20,7 @@ fn chat_ok(connection, msg, now) {
     return connection.chat_n <= 10;
 }
 import { SaveData } from "./save_data.hml";
+import { as_int } from "./game.hml";
 import { ChunkedUpload } from "./chunked.hml";
 import { send_event } from "../lib/lobby.hml";
 import { randint, randf } from "@stdlib/random";
@@ -68,6 +69,37 @@ export fn PacketHandler(connection_manager) {
             let cur_player = g.get_player(cur_player_idx);
             let cur_player_is_cpu = cur_player.is_cpu();
             let valid_player_packet = (is_host || is_player) && (is_cur_turn || (is_host && cur_player_is_cpu));
+
+            // 1.15: in a match, in-turn state changes travel only as actions (game.hml, "THE 1.15
+            // ACTION LOG"). The old per-step packets are dropped, not relayed.
+            if (g.actions_on && g.game_started && g.is_retired(packet.net_id)) {
+                g.drop_retired(packet.net_id);
+                return;
+            }
+
+            if (packet.net_id == id.ACTION_INTENT) {
+                // The connection's slot is the origin; the packet only names the seat it acts
+                // for, and submit_intent decides whether that is the sender's to drive.
+                let client_seq = packet.get(0);
+                let reason = g.submit_intent(i, is_host, client_seq, packet.get(1), packet.get(2),
+                    packet.get(3), packet.get(4), packet.get(5));
+                if (reason != null) {
+                    let cs = as_int(client_seq);
+                    if (cs == null) { cs = -1; }
+                    let reject = Packet(id.ACTION_REJECT);
+                    reject.add(cs);
+                    reject.add(reason);
+                    connection.send(reject);
+                }
+                return;
+            }
+
+            if (packet.net_id == id.ACTION_LOG_REQUEST) {
+                // Seated connections only (players and spectators): one still at the password
+                // prompt has not been let into the lobby, so not into its match either.
+                if (i != null) { g.send_log(connection, packet.get(0)); }
+                return;
+            }
 
             if (packet.net_id == id.CLIENT_ACK) {
                 // A connection held at the password gate still ACKs, and its `i` is null --
@@ -319,6 +351,9 @@ export fn PacketHandler(connection_manager) {
                     if (g.all_players_ready()) {
                         let ready_packet = Packet(id.GAME_READY);
                         self.server.broadcast(ready_packet);
+                        // 1.15: the first turn's clock starts when everyone has loaded, not at
+                        // GAME_START -- only while nothing but `start` is in the log.
+                        if (g.actions_on && g.game_started && g.seq == 1) { g.restart_deadline(); }
                     }
                 }
 
@@ -486,6 +521,8 @@ export fn PacketHandler(connection_manager) {
                             save_data.inflate(fn(data) {
                                 g.turn = data.turnNumber;
                                 g.cur_player = data.curPlayer;
+                                // The turn moved by a path other than end_turn: its clock restarts.
+                                if (g.actions_on) { g.restart_deadline(); }
                                 let pi = 0;
                                 while (pi < g.players.length) {
                                     let player = g.players[pi];
@@ -644,7 +681,12 @@ export fn PacketHandler(connection_manager) {
                     let epoch_seconds = time_ms() / 1000;
                     let sync_packet = Packet(id.PLAYER_SYNC);
                     sync_packet.add(epoch_seconds);
-                    sync_packet.add(epoch_seconds + g.game_timer);
+                    // 1.15: the server's own deadline, which is the one that ends the turn.
+                    if (g.actions_on && g.game_started && g.deadline_ms > 0) {
+                        sync_packet.add(g.deadline_ms / 1000);
+                    } else {
+                        sync_packet.add(epoch_seconds + g.game_timer);
+                    }
                     self.server.broadcast(sync_packet);
                 }
 
