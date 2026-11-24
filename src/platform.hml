@@ -298,6 +298,12 @@ export fn Platform(server, game, cm, opts) {
         authenticate: fn(connection, token, ticket, parked_until?: null) {
             if (connection?.sub != null) { return; }
             self.take_commands();
+            // NO KEY SET, NO IDENTITY. A router without the account service (a player's own GameRouter,
+            // listed in their servers.conf) gives this server no ROUTER_JWKS, so no token can be checked
+            // here. A private lobby then seats everybody as it did before Yotis Online, signed-in
+            // clients included; refusing them would put every signed-in player out of every self-hosted
+            // server. A public match still refuses: nobody is seated there unverified.
+            if (self.jwks == null && !self.public) { return; }
             let claims = verify_player_token(token, self.jwks, time_ms() / 1000);
             if (claims == null) {
                 cm.session.kick(connection, "Please sign in again.");

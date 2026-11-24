@@ -1,0 +1,75 @@
+// platform_nokeys_test.hml -- a private lobby whose router has no account service (no ROUTER_JWKS)
+//
+// A player's own GameRouter, listed in their servers.conf, passes no key set. A signed-in client
+// still sends GBE_AUTH first; the server cannot check it, so it seats the player as it did before
+// Yotis Online instead of putting them out: no GBE_AUTH answer, no pinned sub, the client's name.
+//
+//   hemlock test/platform_nokeys_test.hml
+
+import { start_server } from "../src/start_server.hml";
+import * as id from "../src/id.hml";
+import * as fx from "./fixtures.hml";
+import { Events, connect, send, wait_for, kick_reason, wait } from "./harness.hml";
+import { setenv, exit } from "@stdlib/env";
+import { sleep } from "@stdlib/time";
+
+let PORT = 41967;
+let events = Events();
+
+let toy = {
+    new_match: fn(seed, seats) { return { tick: 0, n: seats.length }; },
+    intent: fn(m, slot, values) { },
+    step: fn(m) { m.tick = m.tick + 1; },
+    snapshot: fn(m, slot) { return [m.tick]; },
+    over: fn(m) { return false; },
+    fingerprint: fn(m) { return "t" + m.tick; },
+};
+
+setenv("SHIKIKAN_REQUIRE_MAP", "0");
+setenv("ROUTER_JWKS", "");
+let ctx = { v: null };
+spawn(async fn() {
+    start_server({ realtime: toy, port: PORT, game: "toy", seats: 4,
+        on_start: fn(c) { ctx.v = c; } });
+});
+sleep(0.5);
+
+fn seat(token, uid) {
+    let s = connect(PORT);
+    if (token != null) { send(s, id.GBE_AUTH, [token, ""]); }
+    send(s, id.CLIENT_UID, [uid]);
+    let init = wait_for(s, id.CLIENT_INIT, 2000);
+    if (init != null) {
+        s.slot = init.get(0);
+        send(s, id.PLAYER_ADD, [[0, 0, s.slot, 0]]);
+    }
+    return s;
+}
+
+let failed = 0;
+let total = 0;
+fn check(ok, what) {
+    total = total + 1;
+    if (ok) { print("  pass: " + what); }
+    else { print("  FAIL: " + what); failed = failed + 1; }
+}
+print("platform (private lobby, no key set):");
+
+check(ctx.v.platform.jwks == null, "the server has no key set");
+let a = seat(fx.G1, "uid-a");
+check(a.slot == 0, "a signed-in client is seated (" + a.slot + ")");
+check(wait_for(a, id.GBE_AUTH, 500) == null, "its GBE_AUTH is not answered");
+check(kick_reason(a, id.PLAYER_KICK, 500) == "none", "and it is not put out");
+check(ctx.v.game.get_player(0)?.sub == null, "the seat is not pinned to anybody");
+send(a, id.PLAYER_NAME, ["Mallory"]);
+wait(0.3);
+check(ctx.v.game.get_player(0).name == "Mallory", "the client's own name stands");
+let b = seat(fx.FOREIGN_KEY, "uid-b");
+check(b.slot == 1 && kick_reason(b, id.PLAYER_KICK, 500) == "none", "any token is ignored, not refused");
+let c = seat(null, "uid-c");
+check(c.slot == 2, "and a client with no token sits down as always");
+
+print("");
+print("Platform No-Keys Tests: " + (total - failed) + " passed, " + failed + " failed");
+if (failed > 0) { throw "platform no-keys test failed"; }
+exit(0);

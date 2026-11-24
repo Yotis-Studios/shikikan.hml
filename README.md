@@ -164,7 +164,12 @@ so a report carries what was said rather than what the reporter says was said. `
 `mute {sub}`, `announce {text}`, `close {reason}` (exit code 3), `reserve {ticket, sub, name,
 expires}`, `jwks {keys}`.
 
-`test/identity_test.hml`, `test/platform_test.hml` (a private lobby) and
+**No key set** (v0.5.1). A router without the account service (a player's own GameRouter from
+their servers.conf) passes no `ROUTER_JWKS`. A private lobby then ignores `GBE_AUTH` and seats a
+signed-in client as it did before, rather than putting it out; a public match still refuses.
+
+`test/identity_test.hml`, `test/platform_test.hml` (a private lobby),
+`test/platform_nokeys_test.hml` (a private lobby with no key set) and
 `test/platform_public_test.hml` (a Quick Play match) cover these.
 
 ## Building a New Game
