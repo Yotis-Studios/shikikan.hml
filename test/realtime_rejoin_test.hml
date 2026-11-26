@@ -13,17 +13,21 @@
 import { Client, Packet } from "Yotis-Studios/gn.hml";
 import { start_server } from "../src/start_server.hml";
 import * as id from "../src/id.hml";
-import { setenv, getenv, exit } from "@stdlib/env";
+import { setenv, getenv, exit, get_pid } from "@stdlib/env";
 import { sleep, time_ms } from "@stdlib/time";
 import { parse } from "@stdlib/json";
-import { open } from "@stdlib/fs";
+import { open, remove_file } from "@stdlib/fs";
+import { tmpdir } from "@stdlib/os";
 
 let PORT = 41951;
 let OVER_AT = 150;       // ticks: five seconds at 30 Hz
 let DROP_AT = 45;        // the second seat drops at this server tick
 let TAKEOVER_AT = 90;    // and a second connection with its uid takes over at this one
 let QUIET_AT = 130;      // every seat stops sending here, so a late (fuzzed) intent still lands
-let LOG = "/tmp/shikikan_rejoin_test.jsonl";
+// A file of this run's own, not a fixed /tmp name: two users running the suites on one host (a
+// staging deploy, then a production one) cannot overwrite each other's files with
+// fs.protected_regular=2, and the second run failed before it tested anything (2026-11-26).
+let LOG = tmpdir() + "/shikikan_rejoin_test-" + get_pid() + ".jsonl";
 
 let seen = { left: [], rejoined: [], applied_after: 0 };
 
@@ -238,6 +242,7 @@ if (lines.length == 1) {
 }
 
 print("");
+remove_file(LOG);
 print("Realtime Rejoin Tests: " + (total - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "realtime rejoin test failed"; }
 exit(0);

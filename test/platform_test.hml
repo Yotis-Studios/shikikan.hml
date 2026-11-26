@@ -13,12 +13,16 @@ import { start_server } from "../src/start_server.hml";
 import * as id from "../src/id.hml";
 import * as fx from "./fixtures.hml";
 import { Events, connect, send, wait_for, all_of, kick_reason, until, wait, disconnect } from "./harness.hml";
-import { setenv, exit } from "@stdlib/env";
+import { setenv, exit, get_pid } from "@stdlib/env";
 import { sleep } from "@stdlib/time";
-import { open } from "@stdlib/fs";
+import { open, remove_file } from "@stdlib/fs";
+import { tmpdir } from "@stdlib/os";
 
 let PORT = 41961;
-let FILTER = "/tmp/shikikan_platform_filter.txt";
+// A file of this run's own, not a fixed /tmp name: two users running the suites on one host (a
+// staging deploy, then a production one) cannot overwrite each other's files with
+// fs.protected_regular=2, and the second run failed before it tested anything (2026-11-26).
+let FILTER = tmpdir() + "/shikikan_platform_filter-" + get_pid() + ".txt";
 
 let events = Events();
 
@@ -148,6 +152,7 @@ let code = select([exited], 2000);
 check(kicked(d) == "Closed by a moderator." && code != null && code.value == 3, "close tells everyone why and ends with code 3");
 
 print("");
+remove_file(FILTER);
 print("Platform Tests: " + (total - failed) + " passed, " + failed + " failed");
 if (failed > 0) { throw "platform test failed"; }
 exit(0);
